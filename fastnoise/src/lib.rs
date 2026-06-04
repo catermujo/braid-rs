@@ -265,6 +265,264 @@ struct CombineKernel {
     params: Vec<f32>,
 }
 
+#[derive(Clone)]
+struct Warp2dPayload {
+    source: PositionSlots,
+    output: PositionSlots,
+    noise: FastNoiseLite,
+}
+
+#[derive(Clone)]
+struct Warp3dPayload {
+    source: PositionSlots,
+    output: PositionSlots,
+    noise: FastNoiseLite,
+}
+
+#[derive(Clone)]
+struct Sample2dPayload {
+    source: PositionSlots,
+    output: BufferSlot,
+    noise: FastNoiseLite,
+}
+
+#[derive(Clone)]
+struct Sample3dPayload {
+    source: PositionSlots,
+    output: BufferSlot,
+    noise: FastNoiseLite,
+}
+
+#[derive(Clone)]
+struct CombinePayload {
+    op: CombineOp,
+    inputs: Vec<BufferSlot>,
+    output: BufferSlot,
+    params: Vec<f32>,
+}
+
+trait KernelPayload: Sized {
+    const KIND: FastNoiseKernel;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()>;
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self>;
+
+    fn encode(&self, scratch: &mut PlannerScratch) -> BraidResult<KernelSpec> {
+        scratch.reset();
+        let mut writer = PayloadWriter::new(&mut scratch.bytes);
+        self.encode_into(&mut writer)?;
+        Ok(KernelSpec::new(Self::KIND.into(), scratch.bytes.clone()))
+    }
+
+    fn decode(bytes: &[u8]) -> BraidResult<Self> {
+        let mut reader = PayloadReader::new(bytes);
+        let payload = Self::decode_from(&mut reader)?;
+        reader.finish()?;
+        Ok(payload)
+    }
+}
+
+impl Warp2dPayload {
+    fn into_kernel(self) -> Warp2dKernel {
+        Warp2dKernel {
+            source: self.source,
+            output: self.output,
+            noise: self.noise,
+        }
+    }
+}
+
+impl KernelPayload for Warp2dPayload {
+    const KIND: FastNoiseKernel = FastNoiseKernel::Warp2d;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()> {
+        writer.slot(self.source.x);
+        writer.slot(self.source.y);
+        writer.slot(self.output.x);
+        writer.slot(self.output.y);
+        writer.noise(&self.noise);
+        Ok(())
+    }
+
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self> {
+        Ok(Self {
+            source: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: None,
+            },
+            output: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: None,
+            },
+            noise: reader.noise()?,
+        })
+    }
+}
+
+impl Warp3dPayload {
+    fn into_kernel(self) -> Warp3dKernel {
+        Warp3dKernel {
+            source: self.source,
+            output: self.output,
+            noise: self.noise,
+        }
+    }
+}
+
+impl KernelPayload for Warp3dPayload {
+    const KIND: FastNoiseKernel = FastNoiseKernel::Warp3d;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()> {
+        writer.slot(self.source.x);
+        writer.slot(self.source.y);
+        writer.slot(expect_slot(self.source.z, "warp3d payload source z")?);
+        writer.slot(self.output.x);
+        writer.slot(self.output.y);
+        writer.slot(expect_slot(self.output.z, "warp3d payload output z")?);
+        writer.noise(&self.noise);
+        Ok(())
+    }
+
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self> {
+        Ok(Self {
+            source: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: Some(reader.slot()?),
+            },
+            output: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: Some(reader.slot()?),
+            },
+            noise: reader.noise()?,
+        })
+    }
+}
+
+impl Sample2dPayload {
+    fn into_kernel(self) -> Sample2dKernel {
+        Sample2dKernel {
+            source: self.source,
+            output: self.output,
+            noise: self.noise,
+        }
+    }
+}
+
+impl KernelPayload for Sample2dPayload {
+    const KIND: FastNoiseKernel = FastNoiseKernel::Sample2d;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()> {
+        writer.slot(self.source.x);
+        writer.slot(self.source.y);
+        writer.slot(self.output);
+        writer.noise(&self.noise);
+        Ok(())
+    }
+
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self> {
+        Ok(Self {
+            source: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: None,
+            },
+            output: reader.slot()?,
+            noise: reader.noise()?,
+        })
+    }
+}
+
+impl Sample3dPayload {
+    fn into_kernel(self) -> Sample3dKernel {
+        Sample3dKernel {
+            source: self.source,
+            output: self.output,
+            noise: self.noise,
+        }
+    }
+}
+
+impl KernelPayload for Sample3dPayload {
+    const KIND: FastNoiseKernel = FastNoiseKernel::Sample3d;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()> {
+        writer.slot(self.source.x);
+        writer.slot(self.source.y);
+        writer.slot(expect_slot(self.source.z, "sample3d payload source z")?);
+        writer.slot(self.output);
+        writer.noise(&self.noise);
+        Ok(())
+    }
+
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self> {
+        Ok(Self {
+            source: PositionSlots {
+                x: reader.slot()?,
+                y: reader.slot()?,
+                z: Some(reader.slot()?),
+            },
+            output: reader.slot()?,
+            noise: reader.noise()?,
+        })
+    }
+}
+
+impl CombinePayload {
+    fn into_kernel(self) -> CombineKernel {
+        CombineKernel {
+            op: self.op,
+            inputs: self.inputs,
+            output: self.output,
+            params: self.params,
+        }
+    }
+}
+
+impl KernelPayload for CombinePayload {
+    const KIND: FastNoiseKernel = FastNoiseKernel::Combine;
+
+    fn encode_into(&self, writer: &mut PayloadWriter<'_>) -> BraidResult<()> {
+        writer.u32(encode_combine_op(self.op));
+        writer.u32(usize_to_u32(self.inputs.len(), "combine inputs")?);
+        for slot in &self.inputs {
+            writer.slot(*slot);
+        }
+        writer.slot(self.output);
+        writer.u32(usize_to_u32(self.params.len(), "combine params")?);
+        for value in &self.params {
+            writer.f32(*value);
+        }
+        Ok(())
+    }
+
+    fn decode_from(reader: &mut PayloadReader<'_>) -> BraidResult<Self> {
+        let op = decode_combine_op(reader.u32()?)?;
+        let input_count = usize::try_from(reader.u32()?)
+            .map_err(|_| BraidError::InvalidSpec("combine input count overflow".to_owned()))?;
+        let mut inputs = Vec::with_capacity(input_count);
+        for _ in 0..input_count {
+            inputs.push(reader.slot()?);
+        }
+        let output = reader.slot()?;
+        let param_count = usize::try_from(reader.u32()?)
+            .map_err(|_| BraidError::InvalidSpec("combine param count overflow".to_owned()))?;
+        let mut params = Vec::with_capacity(param_count);
+        for _ in 0..param_count {
+            params.push(reader.f32()?);
+        }
+        Ok(Self {
+            op,
+            inputs,
+            output,
+            params,
+        })
+    }
+}
+
 impl PlannerBackend for FastNoisePlanner {
     type Spec = FastNoiseGraphSpec;
     type State = FastNoiseState;
@@ -518,87 +776,21 @@ impl CpuKernelFactory for FastNoiseKernelFactory {
         match kind {
             FastNoiseKernel::InitGrid2d => Ok(Box::new(InitGrid2dKernel)),
             FastNoiseKernel::InitGrid3d => Ok(Box::new(InitGrid3dKernel)),
-            FastNoiseKernel::Warp2d => {
-                let mut cursor = Cursor::new(&kernel.payload);
-                Ok(Box::new(Warp2dKernel {
-                    source: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: None,
-                    },
-                    output: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: None,
-                    },
-                    noise: cursor.read_noise()?,
-                }))
-            }
-            FastNoiseKernel::Warp3d => {
-                let mut cursor = Cursor::new(&kernel.payload);
-                Ok(Box::new(Warp3dKernel {
-                    source: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: Some(cursor.read_slot()?),
-                    },
-                    output: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: Some(cursor.read_slot()?),
-                    },
-                    noise: cursor.read_noise()?,
-                }))
-            }
-            FastNoiseKernel::Sample2d => {
-                let mut cursor = Cursor::new(&kernel.payload);
-                Ok(Box::new(Sample2dKernel {
-                    source: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: None,
-                    },
-                    output: cursor.read_slot()?,
-                    noise: cursor.read_noise()?,
-                }))
-            }
-            FastNoiseKernel::Sample3d => {
-                let mut cursor = Cursor::new(&kernel.payload);
-                Ok(Box::new(Sample3dKernel {
-                    source: PositionSlots {
-                        x: cursor.read_slot()?,
-                        y: cursor.read_slot()?,
-                        z: Some(cursor.read_slot()?),
-                    },
-                    output: cursor.read_slot()?,
-                    noise: cursor.read_noise()?,
-                }))
-            }
-            FastNoiseKernel::Combine => {
-                let mut cursor = Cursor::new(&kernel.payload);
-                let op = decode_combine_op(cursor.read_u32()?)?;
-                let input_count = usize::try_from(cursor.read_u32()?).map_err(|_| {
-                    BraidError::InvalidSpec("combine input count overflow".to_owned())
-                })?;
-                let mut inputs = Vec::with_capacity(input_count);
-                for _ in 0..input_count {
-                    inputs.push(cursor.read_slot()?);
-                }
-                let output = cursor.read_slot()?;
-                let param_count = usize::try_from(cursor.read_u32()?).map_err(|_| {
-                    BraidError::InvalidSpec("combine param count overflow".to_owned())
-                })?;
-                let mut params = Vec::with_capacity(param_count);
-                for _ in 0..param_count {
-                    params.push(cursor.read_f32()?);
-                }
-                Ok(Box::new(CombineKernel {
-                    op,
-                    inputs,
-                    output,
-                    params,
-                }))
-            }
+            FastNoiseKernel::Warp2d => Ok(Box::new(
+                Warp2dPayload::decode(&kernel.payload)?.into_kernel(),
+            )),
+            FastNoiseKernel::Warp3d => Ok(Box::new(
+                Warp3dPayload::decode(&kernel.payload)?.into_kernel(),
+            )),
+            FastNoiseKernel::Sample2d => Ok(Box::new(
+                Sample2dPayload::decode(&kernel.payload)?.into_kernel(),
+            )),
+            FastNoiseKernel::Sample3d => Ok(Box::new(
+                Sample3dPayload::decode(&kernel.payload)?.into_kernel(),
+            )),
+            FastNoiseKernel::Combine => Ok(Box::new(
+                CombinePayload::decode(&kernel.payload)?.into_kernel(),
+            )),
         }
     }
 }
@@ -901,101 +1093,122 @@ impl CombineKernel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct NodeHandle(usize);
+
+impl NodeHandle {
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
+struct CompileNodes<'a> {
+    nodes: Vec<&'a NodeSpec>,
+    handles_by_id: HashMap<&'a str, NodeHandle>,
+    outputs: Vec<OutputKind>,
+}
+
+impl<'a> CompileNodes<'a> {
+    fn build(state: &'a FastNoiseState) -> BraidResult<Self> {
+        let mut nodes = Vec::with_capacity(state.nodes.len());
+        let mut handles_by_id = HashMap::with_capacity(state.nodes.len());
+        for (_, node) in state.nodes.iter() {
+            let handle = NodeHandle(nodes.len());
+            if handles_by_id.insert(node.id(), handle).is_some() {
+                return Err(BraidError::DuplicateId {
+                    kind: "node",
+                    id: node.id().to_owned(),
+                });
+            }
+            nodes.push(node);
+        }
+        let outputs = nodes
+            .iter()
+            .map(|node| node.output_kind(state.dimension))
+            .collect();
+        Ok(Self {
+            nodes,
+            handles_by_id,
+            outputs,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn handles(&self) -> impl Iterator<Item = NodeHandle> + '_ {
+        (0..self.nodes.len()).map(NodeHandle)
+    }
+
+    fn node(&self, handle: NodeHandle) -> &'a NodeSpec {
+        self.nodes[handle.index()]
+    }
+
+    fn output(&self, handle: NodeHandle) -> OutputKind {
+        self.outputs[handle.index()]
+    }
+
+    fn resolve(&self, id: &str) -> Option<NodeHandle> {
+        self.handles_by_id.get(id).copied()
+    }
+}
+
 fn compile_graph(
     state: &FastNoiseState,
     scratch: &mut PlannerScratch,
 ) -> BraidResult<CompiledPlan<FastNoisePlannerMeta>> {
-    let mut nodes = Vec::with_capacity(state.nodes.len());
-    for (_, node) in state.nodes.iter() {
-        nodes.push(node.clone());
-    }
-
-    let mut by_id = HashMap::with_capacity(nodes.len());
-    let mut insertion_order = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let id = node.id().to_owned();
-        insertion_order.push(id.clone());
-        by_id.insert(id, node);
-    }
-
-    let mut outputs = HashMap::with_capacity(by_id.len());
-    for id in &insertion_order {
-        let Some(node) = by_id.get(id) else {
-            return Err(BraidError::InvalidSpec(
-                "node map lost insertion order entry".to_owned(),
-            ));
-        };
-        outputs.insert(id.clone(), node.output_kind(state.dimension));
-    }
-
-    let mut indegree = HashMap::with_capacity(by_id.len());
-    let mut adjacency: HashMap<String, Vec<String>> = HashMap::with_capacity(by_id.len());
-    for id in &insertion_order {
-        indegree.insert(id.clone(), 0usize);
-    }
-
-    for id in &insertion_order {
-        let Some(node) = by_id.get(id) else {
-            return Err(BraidError::InvalidSpec(
-                "node missing during dependency scan".to_owned(),
-            ));
-        };
-        let deps = validate_and_collect_dependencies(node, state.dimension, &outputs)?;
+    let graph = CompileNodes::build(state)?;
+    let mut indegree = vec![0usize; graph.len()];
+    let mut adjacency = vec![Vec::new(); graph.len()];
+    for handle in graph.handles() {
+        let deps = validate_and_collect_dependencies(&graph, handle, state.dimension)?;
         for dep in deps {
-            adjacency.entry(dep).or_default().push(id.clone());
-            let Some(value) = indegree.get_mut(id) else {
-                return Err(BraidError::InvalidSpec("node indegree missing".to_owned()));
-            };
-            *value += 1;
+            adjacency[dep.index()].push(handle);
+            indegree[handle.index()] += 1;
         }
     }
 
-    let final_kind =
-        outputs
-            .get(&state.final_field)
+    let final_handle =
+        graph
+            .resolve(state.final_field.as_str())
             .ok_or_else(|| BraidError::MissingReference {
                 kind: "graph",
                 id: "final_field".to_owned(),
                 reference: state.final_field.clone(),
             })?;
-    if !matches!(final_kind, OutputKind::Scalar(dim) if *dim == state.dimension) {
+    if !matches!(graph.output(final_handle), OutputKind::Scalar(dim) if dim == state.dimension) {
         return Err(BraidError::InvalidSpec(
             "final_field must reference a scalar node in graph dimension".to_owned(),
         ));
     }
 
     let mut queue = VecDeque::new();
-    for id in &insertion_order {
-        if indegree.get(id).copied().unwrap_or_default() == 0 {
-            queue.push_back(id.clone());
+    for handle in graph.handles() {
+        if indegree[handle.index()] == 0 {
+            queue.push_back(handle);
         }
     }
-    let mut sorted = Vec::with_capacity(insertion_order.len());
-    while let Some(id) = queue.pop_front() {
-        sorted.push(id.clone());
-        if let Some(children) = adjacency.remove(&id) {
-            for child in children {
-                let Some(entry) = indegree.get_mut(&child) else {
-                    return Err(BraidError::InvalidSpec(
-                        "child indegree missing during topo sort".to_owned(),
-                    ));
-                };
-                *entry = entry.saturating_sub(1);
-                if *entry == 0 {
-                    queue.push_back(child);
-                }
+    let mut sorted = Vec::with_capacity(graph.len());
+    while let Some(handle) = queue.pop_front() {
+        sorted.push(handle);
+        for child in adjacency[handle.index()].iter().copied() {
+            let entry = &mut indegree[child.index()];
+            *entry = entry.saturating_sub(1);
+            if *entry == 0 {
+                queue.push_back(child);
             }
         }
     }
-    if sorted.len() != insertion_order.len() {
+    if sorted.len() != graph.len() {
         return Err(BraidError::InvalidSpec(
             "fastnoise graph contains a cycle".to_owned(),
         ));
     }
 
     let mut next_slot = SLOT_DYNAMIC_START;
-    let mut position_slots = HashMap::new();
-    let mut scalar_slots = HashMap::new();
+    let mut position_slots = vec![None; graph.len()];
+    let mut scalar_slots = vec![None; graph.len()];
     let mut buffers = vec![
         BufferSpec::dynamic(SLOT_QUERY_META, ElementKind::U32),
         BufferSpec::dynamic(SLOT_QUERY_F32, ElementKind::F32),
@@ -1007,22 +1220,17 @@ fn compile_graph(
         buffers.push(BufferSpec::dynamic(SLOT_BASE_Z, ElementKind::F32));
     }
 
-    for id in &sorted {
-        let Some(node) = by_id.get(id) else {
-            return Err(BraidError::InvalidSpec(
-                "node missing during slot alloc".to_owned(),
-            ));
-        };
-        match node.output_kind(state.dimension) {
+    for handle in sorted.iter().copied() {
+        match graph.output(handle) {
             OutputKind::Position(GraphDimension::D2) => {
                 let slots = allocate_position_slots(&mut next_slot, GraphDimension::D2);
-                position_slots.insert(id.clone(), slots);
+                position_slots[handle.index()] = Some(slots);
                 buffers.push(dynamic_f32_buffer(slots.x));
                 buffers.push(dynamic_f32_buffer(slots.y));
             }
             OutputKind::Position(GraphDimension::D3) => {
                 let slots = allocate_position_slots(&mut next_slot, GraphDimension::D3);
-                position_slots.insert(id.clone(), slots);
+                position_slots[handle.index()] = Some(slots);
                 buffers.push(dynamic_f32_buffer(slots.x));
                 buffers.push(dynamic_f32_buffer(slots.y));
                 let slot_z = expect_slot(slots.z, "position z alloc")?;
@@ -1030,7 +1238,7 @@ fn compile_graph(
             }
             OutputKind::Scalar(_) => {
                 let slot = allocate_slot(&mut next_slot);
-                scalar_slots.insert(id.clone(), slot);
+                scalar_slots[handle.index()] = Some(slot);
                 buffers.push(dynamic_f32_buffer(slot));
             }
         }
@@ -1049,74 +1257,105 @@ fn compile_graph(
         ]),
     ));
 
-    for id in &sorted {
-        let Some(node) = by_id.get(id) else {
-            return Err(BraidError::InvalidSpec(
-                "node missing during payload encode".to_owned(),
-            ));
-        };
+    for handle in sorted.iter().copied() {
+        let node = graph.node(handle);
         let kernel = match node {
             NodeSpec::Warp2D(node) => {
-                let source =
-                    resolve_position_source(&node.source, GraphDimension::D2, &position_slots)?;
-                let output = position_slots.get(id).copied().ok_or_else(|| {
-                    BraidError::InvalidSpec("missing warp2d output slot".to_owned())
-                })?;
-                encode_warp2d_kernel(source, output, &node.noise, scratch)
+                let source = resolve_position_source(
+                    &node.source,
+                    GraphDimension::D2,
+                    &graph,
+                    &position_slots,
+                )?;
+                let output =
+                    expect_position_slots(position_slots.as_slice(), handle, "warp2d output slot")?;
+                Warp2dPayload {
+                    source,
+                    output,
+                    noise: node.noise.clone(),
+                }
+                .encode(scratch)
             }
             NodeSpec::Warp3D(node) => {
-                let source =
-                    resolve_position_source(&node.source, GraphDimension::D3, &position_slots)?;
-                let output = position_slots.get(id).copied().ok_or_else(|| {
-                    BraidError::InvalidSpec("missing warp3d output slot".to_owned())
-                })?;
-                encode_warp3d_kernel(source, output, &node.noise, scratch)?
+                let source = resolve_position_source(
+                    &node.source,
+                    GraphDimension::D3,
+                    &graph,
+                    &position_slots,
+                )?;
+                let output =
+                    expect_position_slots(position_slots.as_slice(), handle, "warp3d output slot")?;
+                Warp3dPayload {
+                    source,
+                    output,
+                    noise: node.noise.clone(),
+                }
+                .encode(scratch)
             }
             NodeSpec::Sample2D(node) => {
-                let source =
-                    resolve_position_source(&node.source, GraphDimension::D2, &position_slots)?;
-                let output = scalar_slots.get(id).copied().ok_or_else(|| {
-                    BraidError::InvalidSpec("missing sample2d output slot".to_owned())
-                })?;
-                encode_sample2d_kernel(source, output, &node.noise, scratch)
+                let source = resolve_position_source(
+                    &node.source,
+                    GraphDimension::D2,
+                    &graph,
+                    &position_slots,
+                )?;
+                let output =
+                    expect_scalar_slot(scalar_slots.as_slice(), handle, "sample2d output slot")?;
+                Sample2dPayload {
+                    source,
+                    output,
+                    noise: node.noise.clone(),
+                }
+                .encode(scratch)
             }
             NodeSpec::Sample3D(node) => {
-                let source =
-                    resolve_position_source(&node.source, GraphDimension::D3, &position_slots)?;
-                let output = scalar_slots.get(id).copied().ok_or_else(|| {
-                    BraidError::InvalidSpec("missing sample3d output slot".to_owned())
-                })?;
-                encode_sample3d_kernel(source, output, &node.noise, scratch)?
+                let source = resolve_position_source(
+                    &node.source,
+                    GraphDimension::D3,
+                    &graph,
+                    &position_slots,
+                )?;
+                let output =
+                    expect_scalar_slot(scalar_slots.as_slice(), handle, "sample3d output slot")?;
+                Sample3dPayload {
+                    source,
+                    output,
+                    noise: node.noise.clone(),
+                }
+                .encode(scratch)
             }
             NodeSpec::Combine(node) => {
-                let output = scalar_slots.get(id).copied().ok_or_else(|| {
-                    BraidError::InvalidSpec("missing combine output slot".to_owned())
-                })?;
+                let output =
+                    expect_scalar_slot(scalar_slots.as_slice(), handle, "combine output slot")?;
                 let mut inputs = Vec::with_capacity(node.inputs.len());
                 for input in &node.inputs {
-                    let slot = scalar_slots.get(input).copied().ok_or_else(|| {
+                    let input_handle = graph.resolve(input.as_str()).ok_or_else(|| {
                         BraidError::MissingReference {
                             kind: "combine",
                             id: node.id.clone(),
                             reference: input.clone(),
                         }
                     })?;
+                    let slot = expect_scalar_slot(
+                        scalar_slots.as_slice(),
+                        input_handle,
+                        "combine input slot",
+                    )?;
                     inputs.push(slot);
                 }
-                encode_combine_kernel(node.op, inputs.as_slice(), output, &node.params, scratch)?
+                CombinePayload {
+                    op: node.op,
+                    inputs,
+                    output,
+                    params: node.params.clone(),
+                }
+                .encode(scratch)
             }
-        };
+        }?;
         stages.push(StageSpec::single(kernel));
     }
 
-    let final_slot = scalar_slots
-        .get(&state.final_field)
-        .copied()
-        .ok_or_else(|| BraidError::MissingReference {
-            kind: "graph",
-            id: "final_field".to_owned(),
-            reference: state.final_field.clone(),
-        })?;
+    let final_slot = expect_scalar_slot(scalar_slots.as_slice(), final_handle, "final field slot")?;
 
     let mut plan = CompiledPlan::builder(FastNoisePlannerMeta {
         dimension: state.dimension,
@@ -1141,67 +1380,76 @@ fn validate_node_id(id: &str) -> BraidResult<()> {
 }
 
 fn validate_and_collect_dependencies(
-    node: &NodeSpec,
+    graph: &CompileNodes<'_>,
+    handle: NodeHandle,
     dimension: GraphDimension,
-    outputs: &HashMap<String, OutputKind>,
-) -> BraidResult<Vec<String>> {
+) -> BraidResult<Vec<NodeHandle>> {
+    let node = graph.node(handle);
     match node {
         NodeSpec::Warp2D(node) => {
             ensure_dimension(dimension, GraphDimension::D2, node.id.as_str(), "warp2d")?;
-            Ok(validate_position_source(
-                &node.source,
-                GraphDimension::D2,
-                node.id.as_str(),
-                outputs,
-            )?
-            .into_iter()
-            .collect())
+            Ok(
+                validate_position_source(
+                    &node.source,
+                    GraphDimension::D2,
+                    node.id.as_str(),
+                    graph,
+                )?
+                .into_iter()
+                .collect(),
+            )
         }
         NodeSpec::Warp3D(node) => {
             ensure_dimension(dimension, GraphDimension::D3, node.id.as_str(), "warp3d")?;
-            Ok(validate_position_source(
-                &node.source,
-                GraphDimension::D3,
-                node.id.as_str(),
-                outputs,
-            )?
-            .into_iter()
-            .collect())
+            Ok(
+                validate_position_source(
+                    &node.source,
+                    GraphDimension::D3,
+                    node.id.as_str(),
+                    graph,
+                )?
+                .into_iter()
+                .collect(),
+            )
         }
         NodeSpec::Sample2D(node) => {
             ensure_dimension(dimension, GraphDimension::D2, node.id.as_str(), "sample2d")?;
-            Ok(validate_position_source(
-                &node.source,
-                GraphDimension::D2,
-                node.id.as_str(),
-                outputs,
-            )?
-            .into_iter()
-            .collect())
+            Ok(
+                validate_position_source(
+                    &node.source,
+                    GraphDimension::D2,
+                    node.id.as_str(),
+                    graph,
+                )?
+                .into_iter()
+                .collect(),
+            )
         }
         NodeSpec::Sample3D(node) => {
             ensure_dimension(dimension, GraphDimension::D3, node.id.as_str(), "sample3d")?;
-            Ok(validate_position_source(
-                &node.source,
-                GraphDimension::D3,
-                node.id.as_str(),
-                outputs,
-            )?
-            .into_iter()
-            .collect())
+            Ok(
+                validate_position_source(
+                    &node.source,
+                    GraphDimension::D3,
+                    node.id.as_str(),
+                    graph,
+                )?
+                .into_iter()
+                .collect(),
+            )
         }
         NodeSpec::Combine(node) => {
             validate_combine_shape(node, dimension)?;
             let mut deps = Vec::with_capacity(node.inputs.len());
             for input in &node.inputs {
-                let Some(kind) = outputs.get(input) else {
+                let Some(dep) = graph.resolve(input.as_str()) else {
                     return Err(BraidError::MissingReference {
                         kind: "combine",
                         id: node.id.clone(),
                         reference: input.clone(),
                     });
                 };
-                if *kind != OutputKind::Scalar(dimension) {
+                if graph.output(dep) != OutputKind::Scalar(dimension) {
                     return Err(BraidError::InvalidSpec(format!(
                         "combine '{}' input '{}' must be a scalar {} node",
                         node.id,
@@ -1209,13 +1457,13 @@ fn validate_and_collect_dependencies(
                         dimension_label(dimension)
                     )));
                 }
-                if deps.contains(input) {
+                if deps.contains(&dep) {
                     return Err(BraidError::InvalidSpec(format!(
                         "combine '{}' cannot repeat input '{}'",
                         node.id, input
                     )));
                 }
-                deps.push(input.clone());
+                deps.push(dep);
             }
             Ok(deps)
         }
@@ -1226,19 +1474,19 @@ fn validate_position_source(
     source: &PositionSource,
     expected: GraphDimension,
     node_id: &str,
-    outputs: &HashMap<String, OutputKind>,
-) -> BraidResult<Option<String>> {
+    graph: &CompileNodes<'_>,
+) -> BraidResult<Option<NodeHandle>> {
     match source {
         PositionSource::Base => Ok(None),
         PositionSource::Node(id) => {
-            let Some(kind) = outputs.get(id) else {
+            let Some(handle) = graph.resolve(id.as_str()) else {
                 return Err(BraidError::MissingReference {
                     kind: "node",
                     id: node_id.to_owned(),
                     reference: id.clone(),
                 });
             };
-            if *kind != OutputKind::Position(expected) {
+            if graph.output(handle) != OutputKind::Position(expected) {
                 return Err(BraidError::InvalidSpec(format!(
                     "node '{}' source '{}' must be a position {} node",
                     node_id,
@@ -1246,7 +1494,7 @@ fn validate_position_source(
                     dimension_label(expected)
                 )));
             }
-            Ok(Some(id.clone()))
+            Ok(Some(handle))
         }
     }
 }
@@ -1312,116 +1560,11 @@ fn validate_combine_shape(node: &CombineNode, dimension: GraphDimension) -> Brai
     Ok(())
 }
 
-fn encode_warp2d_kernel(
-    source: PositionSlots,
-    output: PositionSlots,
-    noise: &FastNoiseLite,
-    scratch: &mut PlannerScratch,
-) -> KernelSpec {
-    scratch.reset();
-    push_slot(&mut scratch.bytes, source.x);
-    push_slot(&mut scratch.bytes, source.y);
-    push_slot(&mut scratch.bytes, output.x);
-    push_slot(&mut scratch.bytes, output.y);
-    push_noise(&mut scratch.bytes, noise);
-    KernelSpec::new(FastNoiseKernel::Warp2d.into(), scratch.bytes.clone())
-}
-
-fn encode_warp3d_kernel(
-    source: PositionSlots,
-    output: PositionSlots,
-    noise: &FastNoiseLite,
-    scratch: &mut PlannerScratch,
-) -> BraidResult<KernelSpec> {
-    scratch.reset();
-    push_slot(&mut scratch.bytes, source.x);
-    push_slot(&mut scratch.bytes, source.y);
-    push_slot(
-        &mut scratch.bytes,
-        expect_slot(source.z, "warp3d source z encode")?,
-    );
-    push_slot(&mut scratch.bytes, output.x);
-    push_slot(&mut scratch.bytes, output.y);
-    push_slot(
-        &mut scratch.bytes,
-        expect_slot(output.z, "warp3d output z encode")?,
-    );
-    push_noise(&mut scratch.bytes, noise);
-    Ok(KernelSpec::new(
-        FastNoiseKernel::Warp3d.into(),
-        scratch.bytes.clone(),
-    ))
-}
-
-fn encode_sample2d_kernel(
-    source: PositionSlots,
-    output: BufferSlot,
-    noise: &FastNoiseLite,
-    scratch: &mut PlannerScratch,
-) -> KernelSpec {
-    scratch.reset();
-    push_slot(&mut scratch.bytes, source.x);
-    push_slot(&mut scratch.bytes, source.y);
-    push_slot(&mut scratch.bytes, output);
-    push_noise(&mut scratch.bytes, noise);
-    KernelSpec::new(FastNoiseKernel::Sample2d.into(), scratch.bytes.clone())
-}
-
-fn encode_sample3d_kernel(
-    source: PositionSlots,
-    output: BufferSlot,
-    noise: &FastNoiseLite,
-    scratch: &mut PlannerScratch,
-) -> BraidResult<KernelSpec> {
-    scratch.reset();
-    push_slot(&mut scratch.bytes, source.x);
-    push_slot(&mut scratch.bytes, source.y);
-    push_slot(
-        &mut scratch.bytes,
-        expect_slot(source.z, "sample3d source z encode")?,
-    );
-    push_slot(&mut scratch.bytes, output);
-    push_noise(&mut scratch.bytes, noise);
-    Ok(KernelSpec::new(
-        FastNoiseKernel::Sample3d.into(),
-        scratch.bytes.clone(),
-    ))
-}
-
-fn encode_combine_kernel(
-    op: CombineOp,
-    inputs: &[BufferSlot],
-    output: BufferSlot,
-    params: &[f32],
-    scratch: &mut PlannerScratch,
-) -> BraidResult<KernelSpec> {
-    scratch.reset();
-    push_u32(&mut scratch.bytes, encode_combine_op(op));
-    push_u32(
-        &mut scratch.bytes,
-        usize_to_u32(inputs.len(), "combine inputs")?,
-    );
-    for slot in inputs {
-        push_slot(&mut scratch.bytes, *slot);
-    }
-    push_slot(&mut scratch.bytes, output);
-    push_u32(
-        &mut scratch.bytes,
-        usize_to_u32(params.len(), "combine params")?,
-    );
-    for value in params {
-        push_f32(&mut scratch.bytes, *value);
-    }
-    Ok(KernelSpec::new(
-        FastNoiseKernel::Combine.into(),
-        scratch.bytes.clone(),
-    ))
-}
-
 fn resolve_position_source(
     source: &PositionSource,
     expected: GraphDimension,
-    position_slots: &HashMap<String, PositionSlots>,
+    graph: &CompileNodes<'_>,
+    position_slots: &[Option<PositionSlots>],
 ) -> BraidResult<PositionSlots> {
     match source {
         PositionSource::Base => Ok(match expected {
@@ -1436,16 +1579,16 @@ fn resolve_position_source(
                 z: Some(SLOT_BASE_Z),
             },
         }),
-        PositionSource::Node(id) => {
-            position_slots
-                .get(id)
-                .copied()
-                .ok_or_else(|| BraidError::MissingReference {
-                    kind: "node",
-                    id: "position_source".to_owned(),
-                    reference: id.clone(),
-                })
-        }
+        PositionSource::Node(id) => graph
+            .resolve(id.as_str())
+            .ok_or_else(|| BraidError::MissingReference {
+                kind: "node",
+                id: "position_source".to_owned(),
+                reference: id.clone(),
+            })
+            .and_then(|handle| {
+                expect_position_slots(position_slots, handle, "position source slots")
+            }),
     }
 }
 
@@ -1544,6 +1687,22 @@ fn expect_slot(slot: Option<BufferSlot>, label: &str) -> BraidResult<BufferSlot>
     slot.ok_or_else(|| BraidError::InvalidSpec(format!("missing {}", label)))
 }
 
+fn expect_position_slots(
+    slots: &[Option<PositionSlots>],
+    handle: NodeHandle,
+    label: &str,
+) -> BraidResult<PositionSlots> {
+    slots[handle.index()].ok_or_else(|| BraidError::InvalidSpec(format!("missing {}", label)))
+}
+
+fn expect_scalar_slot(
+    slots: &[Option<BufferSlot>],
+    handle: NodeHandle,
+    label: &str,
+) -> BraidResult<BufferSlot> {
+    slots[handle.index()].ok_or_else(|| BraidError::InvalidSpec(format!("missing {}", label)))
+}
+
 fn expect_two_inputs(inputs: &[BufferSlot], label: &str) -> BraidResult<[BufferSlot; 2]> {
     inputs
         .try_into()
@@ -1583,48 +1742,54 @@ fn dimension_label(dimension: GraphDimension) -> &'static str {
     }
 }
 
-fn push_u16(bytes: &mut Vec<u8>, value: u16) {
-    bytes.extend_from_slice(&value.to_le_bytes());
+struct PayloadWriter<'a> {
+    bytes: &'a mut Vec<u8>,
 }
 
-fn push_slot(bytes: &mut Vec<u8>, value: BufferSlot) {
-    push_u16(bytes, value.raw());
-}
+impl<'a> PayloadWriter<'a> {
+    fn new(bytes: &'a mut Vec<u8>) -> Self {
+        Self { bytes }
+    }
 
-fn push_u32(bytes: &mut Vec<u8>, value: u32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
+    fn u16(&mut self, value: u16) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
 
-fn push_i32(bytes: &mut Vec<u8>, value: i32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
+    fn slot(&mut self, value: BufferSlot) {
+        self.u16(value.raw());
+    }
 
-fn push_f32(bytes: &mut Vec<u8>, value: f32) {
-    bytes.extend_from_slice(&value.to_le_bytes());
-}
+    fn u32(&mut self, value: u32) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
 
-fn push_noise(bytes: &mut Vec<u8>, noise: &FastNoiseLite) {
-    push_i32(bytes, noise.seed);
-    push_f32(bytes, noise.frequency);
-    push_u32(bytes, encode_noise_type(noise.noise_type));
-    push_u32(bytes, encode_rotation_type(noise.rotation_type_3d));
-    push_u32(bytes, encode_fractal_type(noise.fractal_type));
-    push_i32(bytes, noise.octaves);
-    push_f32(bytes, noise.lacunarity);
-    push_f32(bytes, noise.gain);
-    push_f32(bytes, noise.weighted_strength);
-    push_f32(bytes, noise.ping_pong_strength);
-    push_u32(
-        bytes,
-        encode_cellular_distance_function(noise.cellular_distance_function),
-    );
-    push_u32(
-        bytes,
-        encode_cellular_return_type(noise.cellular_return_type),
-    );
-    push_f32(bytes, noise.cellular_jitter_modifier);
-    push_u32(bytes, encode_domain_warp_type(noise.domain_warp_type));
-    push_f32(bytes, noise.domain_warp_amp);
+    fn i32(&mut self, value: i32) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn f32(&mut self, value: f32) {
+        self.bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn noise(&mut self, noise: &FastNoiseLite) {
+        self.i32(noise.seed);
+        self.f32(noise.frequency);
+        self.u32(encode_noise_type(noise.noise_type));
+        self.u32(encode_rotation_type(noise.rotation_type_3d));
+        self.u32(encode_fractal_type(noise.fractal_type));
+        self.i32(noise.octaves);
+        self.f32(noise.lacunarity);
+        self.f32(noise.gain);
+        self.f32(noise.weighted_strength);
+        self.f32(noise.ping_pong_strength);
+        self.u32(encode_cellular_distance_function(
+            noise.cellular_distance_function,
+        ));
+        self.u32(encode_cellular_return_type(noise.cellular_return_type));
+        self.f32(noise.cellular_jitter_modifier);
+        self.u32(encode_domain_warp_type(noise.domain_warp_type));
+        self.f32(noise.domain_warp_amp);
+    }
 }
 
 fn encode_noise_type(value: NoiseType) -> u32 {
@@ -1799,14 +1964,23 @@ fn decode_combine_op(value: u32) -> BraidResult<CombineOp> {
     }
 }
 
-struct Cursor<'a> {
+struct PayloadReader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
-impl<'a> Cursor<'a> {
+impl<'a> PayloadReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, offset: 0 }
+    }
+
+    fn finish(&self) -> BraidResult<()> {
+        if self.offset == self.bytes.len() {
+            return Ok(());
+        }
+        Err(BraidError::InvalidSpec(
+            "kernel payload has trailing bytes".to_owned(),
+        ))
     }
 
     fn read_exact<const N: usize>(&mut self) -> BraidResult<[u8; N]> {
@@ -1822,42 +1996,42 @@ impl<'a> Cursor<'a> {
         Ok(out)
     }
 
-    fn read_u16(&mut self) -> BraidResult<u16> {
+    fn u16(&mut self) -> BraidResult<u16> {
         Ok(u16::from_le_bytes(self.read_exact()?))
     }
 
-    fn read_slot(&mut self) -> BraidResult<BufferSlot> {
-        Ok(BufferSlot::new(self.read_u16()?))
+    fn slot(&mut self) -> BraidResult<BufferSlot> {
+        Ok(BufferSlot::new(self.u16()?))
     }
 
-    fn read_u32(&mut self) -> BraidResult<u32> {
+    fn u32(&mut self) -> BraidResult<u32> {
         Ok(u32::from_le_bytes(self.read_exact()?))
     }
 
-    fn read_i32(&mut self) -> BraidResult<i32> {
+    fn i32(&mut self) -> BraidResult<i32> {
         Ok(i32::from_le_bytes(self.read_exact()?))
     }
 
-    fn read_f32(&mut self) -> BraidResult<f32> {
+    fn f32(&mut self) -> BraidResult<f32> {
         Ok(f32::from_le_bytes(self.read_exact()?))
     }
 
-    fn read_noise(&mut self) -> BraidResult<FastNoiseLite> {
-        let seed = self.read_i32()?;
-        let frequency = self.read_f32()?;
-        let noise_type = decode_noise_type(self.read_u32()?)?;
-        let rotation_type = decode_rotation_type(self.read_u32()?)?;
-        let fractal_type = decode_fractal_type(self.read_u32()?)?;
-        let octaves = self.read_i32()?;
-        let lacunarity = self.read_f32()?;
-        let gain = self.read_f32()?;
-        let weighted_strength = self.read_f32()?;
-        let ping_pong_strength = self.read_f32()?;
-        let cellular_distance = decode_cellular_distance_function(self.read_u32()?)?;
-        let cellular_return = decode_cellular_return_type(self.read_u32()?)?;
-        let cellular_jitter = self.read_f32()?;
-        let domain_warp_type = decode_domain_warp_type(self.read_u32()?)?;
-        let domain_warp_amp = self.read_f32()?;
+    fn noise(&mut self) -> BraidResult<FastNoiseLite> {
+        let seed = self.i32()?;
+        let frequency = self.f32()?;
+        let noise_type = decode_noise_type(self.u32()?)?;
+        let rotation_type = decode_rotation_type(self.u32()?)?;
+        let fractal_type = decode_fractal_type(self.u32()?)?;
+        let octaves = self.i32()?;
+        let lacunarity = self.f32()?;
+        let gain = self.f32()?;
+        let weighted_strength = self.f32()?;
+        let ping_pong_strength = self.f32()?;
+        let cellular_distance = decode_cellular_distance_function(self.u32()?)?;
+        let cellular_return = decode_cellular_return_type(self.u32()?)?;
+        let cellular_jitter = self.f32()?;
+        let domain_warp_type = decode_domain_warp_type(self.u32()?)?;
+        let domain_warp_amp = self.f32()?;
 
         let mut noise = FastNoiseLite::with_seed(seed);
         noise.set_frequency(Some(frequency));
@@ -2099,10 +2273,11 @@ pub mod scenarios {
 mod tests {
     use super::{
         ChunkQuery, CombineNode, CombineOp, FastNoiseChange, FastNoiseGraphSpec, FastNoiseLite,
-        FastNoisePlanner, FractalType, GraphDimension, NodeSpec, NoiseType, PositionSource,
-        Sample2DNode, Sample3DNode, Warp2DNode, scenarios, summarize_samples,
+        FastNoisePlanner, FractalType, GraphDimension, KernelPayload, NodeSpec, NoiseType,
+        PositionSlots, PositionSource, Sample2DNode, Sample3DNode, Sample3dPayload, Warp2DNode,
+        scenarios, summarize_samples,
     };
-    use braid::{BackendConfig, BraidExecutor, PlannerBackend, Stack};
+    use braid::{BackendConfig, BraidExecutor, BufferSlot, PlannerBackend, Stack};
     use std::sync::Arc;
 
     fn sample_noise(seed: i32, noise_type: NoiseType, frequency: f32) -> FastNoiseLite {
@@ -2299,6 +2474,39 @@ mod tests {
             packet.u32(super::SLOT_QUERY_OFFSETS).expect("offsets"),
             &[0, 12, 16]
         );
+    }
+
+    #[test]
+    fn sample3d_payload_roundtrip_preserves_fields() {
+        let mut noise = sample_noise(37, NoiseType::OpenSimplex2S, 0.125);
+        noise.set_fractal_lacunarity(Some(2.5));
+        noise.set_fractal_gain(Some(0.45));
+
+        let payload = Sample3dPayload {
+            source: PositionSlots {
+                x: BufferSlot::new(41),
+                y: BufferSlot::new(42),
+                z: Some(BufferSlot::new(43)),
+            },
+            output: BufferSlot::new(99),
+            noise: noise.clone(),
+        };
+
+        let mut scratch = braid::PlannerScratch::default();
+        let kernel = payload.encode(&mut scratch).expect("encode");
+        let decoded = Sample3dPayload::decode(&kernel.payload).expect("decode");
+
+        assert_eq!(decoded.source.x, payload.source.x);
+        assert_eq!(decoded.source.y, payload.source.y);
+        assert_eq!(decoded.source.z, payload.source.z);
+        assert_eq!(decoded.output, payload.output);
+        assert_eq!(decoded.noise.seed, noise.seed);
+        assert_eq!(decoded.noise.frequency, noise.frequency);
+        assert_eq!(decoded.noise.noise_type, noise.noise_type);
+        assert_eq!(decoded.noise.fractal_type, noise.fractal_type);
+        assert_eq!(decoded.noise.octaves, noise.octaves);
+        assert_eq!(decoded.noise.lacunarity, noise.lacunarity);
+        assert_eq!(decoded.noise.gain, noise.gain);
     }
 
     #[test]
