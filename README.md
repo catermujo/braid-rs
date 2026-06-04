@@ -16,6 +16,14 @@ Main shape:
 - `braid`: core executor / stack / traits
 - `braid-fastnoise`: real FastNoise worldgen adapter with vendored upstream source
 
+## Docs
+
+- [docs/architecture.md](./docs/architecture.md): core concepts, job flow, versioning, and memory model
+- [docs/writing_planners_and_backends.md](./docs/writing_planners_and_backends.md): how to implement a planner or backend
+- `cargo doc --no-deps`: API docs for `PlannerBackend`, `ComputeBackend`, `Stack`, and `BraidExecutor`
+- [examples/terrain_stack.rs](./examples/terrain_stack.rs): smallest real stack example
+- [examples/lanes_showcase.rs](./examples/lanes_showcase.rs): direct serial vs braid parallel showcase
+
 ## Quick Start
 
 Tiny stack example:
@@ -42,6 +50,25 @@ Two useful truths from the FastNoise workload:
 
 1. `braid` core overhead is tiny next to real chunk generation compute.
 2. Multi-lane speedup is simple: register backend with more lanes, dispatch more jobs.
+
+## Core Model
+
+`braid` keeps four roles separate:
+
+- `PlannerBackend`: owns your authoring model, mutable planner state, compilation, and query/result codecs
+- `ComputeBackend`: owns execution of compiled stages on some device or runtime
+- `Stack<P, C>`: one typed compiled instance built from one planner, one backend, and one live mutable state
+- `BraidExecutor`: shared async worker pool that runs jobs from many stacks
+
+Typical flow:
+
+1. Create one shared executor.
+2. Register one or more shared backends with lane counts.
+3. Create one or more typed stacks from planner + backend + spec.
+4. Dispatch query batches to stacks.
+5. Apply changes and recompile when data changes.
+
+If you want deeper lifecycle details, see [docs/architecture.md](./docs/architecture.md).
 
 ## Showcase: Direct Serial vs Braid Parallel
 

@@ -1,6 +1,13 @@
+//! Stable-slot table with generation keys.
+//!
+//! This is useful for planner state that wants reusable holes and stale-handle detection.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Opaque stable handle into a [`SlotTable`].
 pub struct SlotKey {
+    /// Dense slot index.
     pub index: u32,
+    /// Generation counter used to invalidate stale keys.
     pub generation: u32,
 }
 
@@ -11,6 +18,7 @@ struct Slot<T> {
 }
 
 #[derive(Clone, Debug)]
+/// Stable-slot container that reuses holes and invalidates stale keys by generation.
 pub struct SlotTable<T> {
     slots: Vec<Slot<T>>,
     free: Vec<usize>,
@@ -28,6 +36,7 @@ impl<T> Default for SlotTable<T> {
 }
 
 impl<T> SlotTable<T> {
+    /// Insert one value and return its stable key.
     pub fn insert(&mut self, value: T) -> SlotKey {
         if let Some(index) = self.free.pop() {
             let slot = &mut self.slots[index];
@@ -51,6 +60,7 @@ impl<T> SlotTable<T> {
         }
     }
 
+    /// Remove one value by key, returning `None` for stale or missing keys.
     pub fn remove(&mut self, key: SlotKey) -> Option<T> {
         let slot = self.slots.get_mut(key.index as usize)?;
         if slot.generation != key.generation {
@@ -63,6 +73,7 @@ impl<T> SlotTable<T> {
         Some(value)
     }
 
+    /// Borrow one value by key.
     pub fn get(&self, key: SlotKey) -> Option<&T> {
         let slot = self.slots.get(key.index as usize)?;
         if slot.generation != key.generation {
@@ -71,6 +82,7 @@ impl<T> SlotTable<T> {
         slot.value.as_ref()
     }
 
+    /// Mutably borrow one value by key.
     pub fn get_mut(&mut self, key: SlotKey) -> Option<&mut T> {
         let slot = self.slots.get_mut(key.index as usize)?;
         if slot.generation != key.generation {
@@ -79,18 +91,22 @@ impl<T> SlotTable<T> {
         slot.value.as_mut()
     }
 
+    /// Number of live values.
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Return whether there are no live values.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// Total slot capacity including holes.
     pub fn capacity(&self) -> usize {
         self.slots.len()
     }
 
+    /// Remove all live values while preserving slot storage for reuse.
     pub fn clear_reuse(&mut self) {
         self.free.clear();
         self.len = 0;
@@ -102,6 +118,7 @@ impl<T> SlotTable<T> {
         }
     }
 
+    /// Iterate over live keys and values.
     pub fn iter(&self) -> impl Iterator<Item = (SlotKey, &T)> {
         self.slots.iter().enumerate().filter_map(|(index, slot)| {
             slot.value.as_ref().map(|value| {
@@ -116,6 +133,7 @@ impl<T> SlotTable<T> {
         })
     }
 
+    /// Mutably iterate over live keys and values.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (SlotKey, &mut T)> {
         self.slots
             .iter_mut()

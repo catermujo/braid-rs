@@ -70,6 +70,7 @@ where
     next_version_id: AtomicU64,
 }
 
+/// Typed runtime handle for one compiled planner/backend combination.
 pub struct Stack<P, C>
 where
     P: PlannerBackend,
@@ -107,6 +108,10 @@ where
     P: PlannerBackend,
     C: ComputeBackend,
 {
+    /// Create one stack from one planner, one shared backend handle, and one initial spec.
+    ///
+    /// This builds mutable planner state, compiles an initial frozen version, and prepares the
+    /// backend before the stack becomes dispatchable.
     pub fn create(
         executor: Arc<BraidExecutor>,
         planner: Arc<P>,
@@ -147,6 +152,7 @@ where
         })
     }
 
+    /// Apply changes to the live mutable planner state without recompiling.
     pub fn apply(&self, changes: Vec<P::Change>) -> BraidResult<()> {
         let mut state = self
             .inner
@@ -156,6 +162,7 @@ where
         self.inner.planner.apply(&mut state, &changes)
     }
 
+    /// Reset the live mutable planner state from a fresh spec without recompiling.
     pub fn replace(&self, spec: P::Spec) -> BraidResult<()> {
         let mut state = self
             .inner
@@ -165,6 +172,7 @@ where
         self.inner.planner.reset_state(&mut state, &spec)
     }
 
+    /// Compile the current mutable planner state into a new frozen version and swap it in.
     pub fn recompile(&self) -> BraidResult<VersionId> {
         let state = self
             .inner
@@ -174,6 +182,10 @@ where
         self.inner.compile_from_state(&state)
     }
 
+    /// Build a new planner state from changes, compile it, and swap it in only if compile works.
+    ///
+    /// This is the safest high-level update path when planner changes should behave
+    /// transactionally.
     pub fn update(&self, changes: Vec<P::Change>) -> BraidResult<VersionId> {
         let mut state = self
             .inner
@@ -186,6 +198,9 @@ where
         Ok(version_id)
     }
 
+    /// Dispatch one batch of queries against the current frozen version.
+    ///
+    /// The returned [`JobId`] is stack-local.
     pub fn dispatch(&self, queries: Vec<P::Query>) -> BraidResult<JobId> {
         let version = {
             let version = self
@@ -225,6 +240,7 @@ where
         Ok(job_id)
     }
 
+    /// Return the current frozen version id.
     pub fn current_version_id(&self) -> BraidResult<VersionId> {
         let version = self
             .inner
@@ -234,6 +250,7 @@ where
         Ok(version.id)
     }
 
+    /// Poll one stack-local job for coarse status.
     pub fn poll(&self, job: JobId) -> JobStatus {
         let jobs = match self.inner.jobs.lock() {
             Ok(jobs) => jobs,
@@ -245,6 +262,7 @@ where
         record.status().unwrap_or(JobStatus::Failed)
     }
 
+    /// Wait for a dispatched job and return decoded planner results.
     pub fn collect(&self, job: JobId) -> BraidResult<Vec<P::Resolution>> {
         let record = {
             let jobs = self
@@ -287,6 +305,7 @@ where
         result
     }
 
+    /// Request cooperative cancellation for one stack-local job.
     pub fn cancel(&self, job: JobId) -> bool {
         let jobs = match self.inner.jobs.lock() {
             Ok(jobs) => jobs,

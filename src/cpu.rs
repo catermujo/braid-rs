@@ -1,3 +1,8 @@
+//! Starter CPU backend implementation.
+//!
+//! This backend is intentionally simple. It gives planners a fast way to execute real workloads
+//! without committing to a custom device/runtime backend yet.
+
 use crate::compute::ComputeBackend;
 use crate::error::{BraidError, BraidResult};
 use crate::job::{CancelFlag, JobPacket};
@@ -7,11 +12,15 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
+/// Prepared CPU kernel instance that can run against a mutable [`JobPacket`].
 pub trait CpuKernel: Send + Sync {
+    /// Execute the kernel.
     fn run(&self, packet: &mut JobPacket, cancel: &CancelFlag) -> BraidResult<()>;
 }
 
+/// Factory that turns compiled [`KernelSpec`] payloads into runnable [`CpuKernel`] instances.
 pub trait CpuKernelFactory: Send + Sync {
+    /// Prepare one kernel instance.
     fn prepare(
         &self,
         kernel: &KernelSpec,
@@ -20,15 +29,18 @@ pub trait CpuKernelFactory: Send + Sync {
 }
 
 #[derive(Default)]
+/// Generic registry-based CPU backend for planner-defined kernel kinds.
 pub struct CpuComputeBackend {
     factories: HashMap<KernelKind, Arc<dyn CpuKernelFactory>>,
 }
 
 impl CpuComputeBackend {
+    /// Create an empty CPU backend with no registered kernel factories.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Register a factory for one kernel kind.
     pub fn register_factory(
         &mut self,
         kind_id: KernelKind,
@@ -39,6 +51,7 @@ impl CpuComputeBackend {
     }
 }
 
+/// Backend-prepared CPU stage set.
 pub struct CpuPrepared {
     stages: Vec<PreparedStage>,
 }

@@ -1,3 +1,17 @@
+//! `braid` is a planner-agnostic, compute-agnostic execution core.
+//!
+//! Start here:
+//!
+//! - [`PlannerBackend`]: authoring model, mutable state, compile, encode, decode
+//! - [`ComputeBackend`]: prepare compiled plans and run stages
+//! - [`Stack`]: one typed runtime instance built from one planner, one backend, and one live state
+//! - [`BraidExecutor`]: shared async worker pool used by many stacks
+//!
+//! Project-level docs:
+//!
+//! - repository guide: `README.md`
+//! - architecture guide: `docs/architecture.md`
+
 mod buffer_pool;
 mod compute;
 mod cpu;

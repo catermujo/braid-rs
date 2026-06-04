@@ -1,3 +1,5 @@
+//! Core stack/executor benchmark suite.
+
 use braid::{
     BackendConfig, BatchScratch, BraidError, BraidExecutor, BraidResult, BufferBinding, BufferSlot,
     BufferSpec, CancelFlag, CompiledPlan, ComputeBackend, ComputeScratch, ElementKind, JobPacket,

@@ -1,3 +1,5 @@
+//! Real FastNoise worldgen benchmark suite for serial-overhead and gameplay-feel measurements.
+
 use braid::{
     BackendConfig, BackendHandle, BatchScratch, BraidExecutor, BraidResult, BufferSlot, CancelFlag,
     CompiledPlan, ComputeBackend, ComputeScratch, JobPacket, PipelineShape, PlannerBackend,

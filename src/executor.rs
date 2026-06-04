@@ -54,7 +54,12 @@ impl RunnableTask for TaskFn {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// Capacity limits for one shared backend instance.
+///
+/// `lane_count` is how many stage executions the executor may run concurrently against that
+/// backend. Set it to `1` when the backend is effectively serialized.
 pub struct BackendConfig {
+    /// Maximum number of stage executions allowed at once for this backend.
     pub lane_count: usize,
 }
 
@@ -78,6 +83,10 @@ struct BackendRuntime {
     prepare_wake: Condvar,
 }
 
+/// Handle to one shared registered backend.
+///
+/// Cloning the handle does not duplicate the backend. All clones still point at the same backend
+/// instance and the same executor-managed lane budget.
 pub struct BackendHandle<C>
 where
     C: ComputeBackend,
@@ -126,6 +135,10 @@ struct ExecutorInner {
     shutdown: AtomicBool,
 }
 
+/// Shared async executor used by many stacks.
+///
+/// The executor owns worker threads and task queues. Backend-specific capacity still comes from
+/// backend lane counts, not from worker count alone.
 pub struct BraidExecutor {
     backends: Mutex<Vec<Weak<BackendRuntime>>>,
     inner: Arc<ExecutorInner>,
@@ -133,6 +146,7 @@ pub struct BraidExecutor {
 }
 
 impl BraidExecutor {
+    /// Create an executor with `worker_count` worker threads.
     pub fn new(worker_count: usize) -> Self {
         let inner = Arc::new(ExecutorInner::default());
         let mut workers = Vec::with_capacity(worker_count.max(1));
@@ -147,6 +161,7 @@ impl BraidExecutor {
         }
     }
 
+    /// Register one shared backend with one stage-lane count.
     pub fn register_backend<C>(&self, backend: Arc<C>, config: BackendConfig) -> BackendHandle<C>
     where
         C: ComputeBackend,
@@ -154,6 +169,10 @@ impl BraidExecutor {
         self.register_backend_with_prepare_lanes(backend, config.lane_count, config.lane_count)
     }
 
+    /// Register one shared backend with separate stage-lane and prepare-lane counts.
+    ///
+    /// This is useful when background prepare/recompile pressure should be capped more tightly
+    /// than normal runtime stage execution.
     pub fn register_backend_with_prepare_lanes<C>(
         &self,
         backend: Arc<C>,
@@ -180,6 +199,7 @@ impl BraidExecutor {
         BackendHandle { backend, runtime }
     }
 
+    /// Stop worker threads and reject any queued backend work.
     pub fn shutdown(&self) {
         if self.inner.shutdown.swap(true, Ordering::AcqRel) {
             return;

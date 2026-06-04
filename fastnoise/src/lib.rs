@@ -1,3 +1,10 @@
+#![allow(missing_docs)]
+//! FastNoise-based worldgen adapter for `braid`.
+//!
+//! This crate compiles graph-shaped noise specs into generic `braid` plans and returns compact
+//! chunk summaries instead of full sample buffers.
+
+#[allow(missing_docs)]
 mod fastnoise_lite;
 
 pub use fastnoise_lite::{
@@ -14,6 +21,7 @@ use braid::{
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+/// Convenience alias for the starter CPU backend used by this adapter.
 pub type FastNoiseCpuBackend = CpuComputeBackend;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,118 +81,195 @@ const SLOT_BASE_Z: BufferSlot = BufferSlot::new(12);
 const SLOT_DYNAMIC_START: u16 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Top-level dimensionality for a FastNoise graph.
 pub enum GraphDimension {
+    /// 2D graph.
     D2,
+    /// 3D graph.
     D3,
 }
 
 #[derive(Clone, Debug)]
+/// Authored FastNoise graph specification.
 pub struct FastNoiseGraphSpec {
+    /// Declared graph dimensionality.
     pub dimension: GraphDimension,
+    /// Authored nodes in arbitrary input order.
     pub nodes: Vec<NodeSpec>,
+    /// Id of the final scalar-output node.
     pub final_field: String,
 }
 
 #[derive(Clone, Debug)]
+/// Position source for warp and sample nodes.
 pub enum PositionSource {
+    /// Base query-grid positions.
     Base,
+    /// Positions produced by another node.
     Node(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Scalar combine operator used by [`CombineNode`].
 pub enum CombineOp {
+    /// Sum all inputs.
     Add,
+    /// Subtract later inputs from the first one.
     Sub,
+    /// Multiply inputs.
     Mul,
+    /// Minimum of inputs.
     Min,
+    /// Maximum of inputs.
     Max,
+    /// Clamp first input using params.
     Clamp,
+    /// Remap first input using params.
     Remap,
+    /// Apply a vertical gradient in 3D using params.
     YGradient,
 }
 
 #[derive(Clone, Debug)]
+/// 2D domain-warp node.
 pub struct Warp2DNode {
+    /// Node id.
     pub id: String,
+    /// Source positions to warp.
     pub source: PositionSource,
+    /// FastNoise configuration.
     pub noise: FastNoiseLite,
 }
 
 #[derive(Clone, Debug)]
+/// 3D domain-warp node.
 pub struct Warp3DNode {
+    /// Node id.
     pub id: String,
+    /// Source positions to warp.
     pub source: PositionSource,
+    /// FastNoise configuration.
     pub noise: FastNoiseLite,
 }
 
 #[derive(Clone, Debug)]
+/// 2D scalar sample node.
 pub struct Sample2DNode {
+    /// Node id.
     pub id: String,
+    /// Source positions to sample.
     pub source: PositionSource,
+    /// FastNoise configuration.
     pub noise: FastNoiseLite,
 }
 
 #[derive(Clone, Debug)]
+/// 3D scalar sample node.
 pub struct Sample3DNode {
+    /// Node id.
     pub id: String,
+    /// Source positions to sample.
     pub source: PositionSource,
+    /// FastNoise configuration.
     pub noise: FastNoiseLite,
 }
 
 #[derive(Clone, Debug)]
+/// Scalar combine node that consumes outputs from other nodes.
 pub struct CombineNode {
+    /// Node id.
     pub id: String,
+    /// Input node ids.
     pub inputs: Vec<String>,
+    /// Combine operator.
     pub op: CombineOp,
+    /// Operator-specific parameters.
     pub params: Vec<f32>,
 }
 
 #[derive(Clone, Debug)]
+/// Authored FastNoise graph node.
 pub enum NodeSpec {
+    /// 2D warp node.
     Warp2D(Warp2DNode),
+    /// 3D warp node.
     Warp3D(Warp3DNode),
+    /// 2D sample node.
     Sample2D(Sample2DNode),
+    /// 3D sample node.
     Sample3D(Sample3DNode),
+    /// Scalar combine node.
     Combine(CombineNode),
 }
 
 #[derive(Clone, Debug)]
+/// Incremental graph change operation.
 pub enum FastNoiseChange {
+    /// Insert a new node or replace one with the same id.
     UpsertNode(NodeSpec),
-    RemoveNode { id: String },
-    SetFinalField { id: String },
+    /// Remove one node by id.
+    RemoveNode {
+        /// Node id to remove.
+        id: String,
+    },
+    /// Change the graph final-field id.
+    SetFinalField {
+        /// New final-field node id.
+        id: String,
+    },
 }
 
 #[derive(Clone, Debug)]
+/// Chunk query input for the FastNoise adapter.
 pub enum ChunkQuery {
+    /// 2D grid query.
     Grid2D {
+        /// Grid width in samples.
         width: usize,
+        /// Grid height in samples.
         height: usize,
+        /// World-space query origin.
         origin: [f32; 2],
+        /// World-space step per sample.
         step: [f32; 2],
     },
+    /// 3D grid query.
     Grid3D {
+        /// Grid width in samples.
         width: usize,
+        /// Grid height in samples.
         height: usize,
+        /// Grid depth in samples.
         depth: usize,
+        /// World-space query origin.
         origin: [f32; 3],
+        /// World-space step per sample.
         step: [f32; 3],
     },
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Compact summary returned for each generated chunk.
 pub struct ChunkSummary {
+    /// Number of generated samples.
     pub samples: usize,
+    /// Minimum sample value.
     pub min: f32,
+    /// Maximum sample value.
     pub max: f32,
+    /// Mean sample value.
     pub mean: f32,
+    /// Deterministic checksum across the generated field.
     pub checksum: u64,
+    /// Stable taps sampled across the field.
     pub taps: [f32; 8],
 }
 
 #[derive(Default)]
+/// Planner that compiles FastNoise graphs into generic `braid` plans.
 pub struct FastNoisePlanner;
 
+/// Create a starter CPU backend preloaded with all FastNoise kernel factories.
 pub fn make_cpu_backend() -> FastNoiseCpuBackend {
     let factory: Arc<dyn CpuKernelFactory> = Arc::new(FastNoiseKernelFactory);
     let mut backend = CpuComputeBackend::new();
@@ -203,11 +288,13 @@ pub fn make_cpu_backend() -> FastNoiseCpuBackend {
 }
 
 #[derive(Clone, Debug)]
+/// Planner metadata preserved inside compiled FastNoise plans.
 pub struct FastNoisePlannerMeta {
     dimension: GraphDimension,
     final_slot: BufferSlot,
 }
 
+/// Mutable planner state for the FastNoise graph.
 pub struct FastNoiseState {
     dimension: GraphDimension,
     final_field: String,
@@ -725,6 +812,7 @@ impl NodeSpec {
 }
 
 impl ChunkQuery {
+    /// Return the total sample count for this chunk query.
     pub fn samples(&self) -> BraidResult<usize> {
         match self {
             Self::Grid2D { width, height, .. } => sample_count_2d(*width, *height),
@@ -2015,6 +2103,7 @@ impl<'a> PayloadReader<'a> {
     }
 }
 
+/// Ready-made worldgen graph builders and patch helpers.
 pub mod scenarios {
     use super::{
         ChunkSummary, CombineNode, CombineOp, DomainWarpType, FastNoiseChange, FastNoiseGraphSpec,
@@ -2022,24 +2111,40 @@ pub mod scenarios {
         Sample2DNode, Sample3DNode, Warp2DNode, Warp3DNode,
     };
 
+    /// Biome graph warp node id.
     pub const BIOME_WARP_NODE: &str = "biome_warp";
+    /// Biome graph moisture node id.
     pub const BIOME_MOISTURE_NODE: &str = "biome_moisture";
+    /// Biome graph temperature node id.
     pub const BIOME_TEMPERATURE_NODE: &str = "biome_temperature";
+    /// Biome graph final node id.
     pub const BIOME_FINAL_NODE: &str = "biome_final";
 
+    /// Terrain graph warp node id.
     pub const TERRAIN_WARP_NODE: &str = "terrain_warp";
+    /// Terrain graph continent node id.
     pub const TERRAIN_CONTINENT_NODE: &str = "terrain_continent";
+    /// Terrain graph erosion node id.
     pub const TERRAIN_EROSION_NODE: &str = "terrain_erosion";
+    /// Terrain graph peaks node id.
     pub const TERRAIN_PEAKS_NODE: &str = "terrain_peaks";
+    /// Terrain graph detail node id.
     pub const TERRAIN_DETAIL_NODE: &str = "terrain_detail";
+    /// Terrain graph final node id.
     pub const TERRAIN_FINAL_NODE: &str = "terrain_final";
 
+    /// Voxel graph warp node id.
     pub const VOXEL_WARP_NODE: &str = "voxel_warp";
+    /// Voxel graph base-density node id.
     pub const VOXEL_BASE_NODE: &str = "voxel_base";
+    /// Voxel graph cave node id.
     pub const VOXEL_CAVE_NODE: &str = "voxel_cave";
+    /// Voxel graph shaped-density node id.
     pub const VOXEL_SHAPE_NODE: &str = "voxel_shape";
+    /// Voxel graph final node id.
     pub const VOXEL_FINAL_NODE: &str = "voxel_final";
 
+    /// Build a 2D biome-control graph.
     pub fn biome_control_2d() -> FastNoiseGraphSpec {
         FastNoiseGraphSpec {
             dimension: GraphDimension::D2,
@@ -2073,6 +2178,7 @@ pub mod scenarios {
         }
     }
 
+    /// Build a 2D terrain-height graph.
     pub fn terrain_height_2d() -> FastNoiseGraphSpec {
         FastNoiseGraphSpec {
             dimension: GraphDimension::D2,
@@ -2134,6 +2240,7 @@ pub mod scenarios {
         }
     }
 
+    /// Build a 3D voxel-density graph.
     pub fn voxel_density_3d() -> FastNoiseGraphSpec {
         FastNoiseGraphSpec {
             dimension: GraphDimension::D3,
@@ -2170,6 +2277,7 @@ pub mod scenarios {
         }
     }
 
+    /// Derive terrain-detail graph updates from a biome summary.
     pub fn terrain_patch_from_biome(summary: &ChunkSummary) -> Vec<FastNoiseChange> {
         let mut noise = terrain_detail_noise(1033);
         noise.set_frequency(Some(0.015 + summary.taps[0].abs() * 0.02));
@@ -2183,6 +2291,7 @@ pub mod scenarios {
         ))]
     }
 
+    /// Derive voxel-density graph updates from a terrain summary.
     pub fn voxel_patch_from_terrain(summary: &ChunkSummary) -> Vec<FastNoiseChange> {
         let mut noise = sample_noise(2011, NoiseType::OpenSimplex2, FractalType::FBm, 0.018, 5);
         noise.set_frequency(Some(0.014 + summary.mean.abs() * 0.01));
