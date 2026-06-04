@@ -39,6 +39,7 @@ fn main() -> BraidResult<()> {
         bench_compile_parallel_plain(&config)?,
         bench_compile_parallel_hidden(&config)?,
         bench_mixed_compile_runtime(&config)?,
+        bench_mixed_planner_gate_runtime(&config)?,
         bench_prepare_parallel_plain(&config)?,
         bench_prepare_parallel_hidden(&config)?,
         bench_prepare_parallel_limited(&config)?,
@@ -157,6 +158,7 @@ fn ns_per(elapsed: Duration, units: usize) -> f64 {
 
 struct BenchPlanner {
     hidden_compile_serialize: bool,
+    hidden_runtime_serialize: bool,
     compile_rounds: u32,
     compile_gate: Mutex<()>,
 }
@@ -317,6 +319,15 @@ impl PlannerBackend for BenchPlanner {
         packet: &mut JobPacket,
         _scratch: &mut BatchScratch,
     ) -> BraidResult<()> {
+        let _guard = if self.hidden_runtime_serialize {
+            Some(
+                self.compile_gate
+                    .lock()
+                    .map_err(|_| BraidError::poisoned("bench_planner.compile_gate"))?,
+            )
+        } else {
+            None
+        };
         packet.set_query_count(queries.len());
         packet
             .ensure_u32(DATA_SLOT, queries.len())
@@ -329,6 +340,15 @@ impl PlannerBackend for BenchPlanner {
         _plan: &CompiledPlan<Self::PlannerMeta>,
         packet: &JobPacket,
     ) -> BraidResult<Vec<Self::Resolution>> {
+        let _guard = if self.hidden_runtime_serialize {
+            Some(
+                self.compile_gate
+                    .lock()
+                    .map_err(|_| BraidError::poisoned("bench_planner.compile_gate"))?,
+            )
+        } else {
+            None
+        };
         Ok(packet.u32(DATA_SLOT)?.to_vec())
     }
 }
@@ -337,6 +357,7 @@ impl BenchPlanner {
     fn plain() -> Self {
         Self {
             hidden_compile_serialize: false,
+            hidden_runtime_serialize: false,
             compile_rounds: 0,
             compile_gate: Mutex::new(()),
         }
@@ -345,6 +366,7 @@ impl BenchPlanner {
     fn compile_heavy() -> Self {
         Self {
             hidden_compile_serialize: false,
+            hidden_runtime_serialize: false,
             compile_rounds: COMPILE_HEAVY_ROUNDS,
             compile_gate: Mutex::new(()),
         }
@@ -353,6 +375,16 @@ impl BenchPlanner {
     fn hidden_compile_heavy() -> Self {
         Self {
             hidden_compile_serialize: true,
+            hidden_runtime_serialize: false,
+            compile_rounds: COMPILE_HEAVY_ROUNDS,
+            compile_gate: Mutex::new(()),
+        }
+    }
+
+    fn hidden_compile_runtime_heavy() -> Self {
+        Self {
+            hidden_compile_serialize: true,
+            hidden_runtime_serialize: true,
             compile_rounds: COMPILE_HEAVY_ROUNDS,
             compile_gate: Mutex::new(()),
         }
@@ -958,6 +990,56 @@ fn bench_mixed_compile_runtime(config: &BenchConfig) -> BraidResult<BenchReport>
 
     Ok(BenchReport {
         name: "mixed_compile_runtime",
+        elapsed: start.elapsed(),
+        iterations: config.iterations,
+        jobs: config.iterations * (compile_stacks.len() + 1),
+        queries: config.iterations * fast_batch_size,
+        checksum,
+        aux_label: Some("fast_ns/job"),
+        aux_elapsed: fast_elapsed,
+        aux_units: config.iterations,
+    })
+}
+
+fn bench_mixed_planner_gate_runtime(config: &BenchConfig) -> BraidResult<BenchReport> {
+    let executor = Arc::new(BraidExecutor::new(config.workers.max(2)));
+    let planner = Arc::new(BenchPlanner::hidden_compile_runtime_heavy());
+    let compile_backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
+    let runtime_backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
+    let compile_stacks = make_stack_group(
+        &executor,
+        &planner,
+        &compile_backend,
+        config,
+        config.stack_count.max(config.workers),
+    )?;
+    let fast_stack = make_stack(&executor, &planner, &runtime_backend, config, 20_131)?;
+    let fast_batch_size = (config.batch_size / 8).max(16);
+
+    warm_parallel_updates(&compile_stacks, 1, config)?;
+    warm_queue_pressure(&fast_stack, fast_batch_size)?;
+
+    let start = Instant::now();
+    let (fast_elapsed, checksum) = run_mixed_update_runtime(
+        &compile_stacks,
+        &fast_stack,
+        config.iterations,
+        config,
+        fast_batch_size,
+    )?;
+
+    Ok(BenchReport {
+        name: "mixed_planner_gate",
         elapsed: start.elapsed(),
         iterations: config.iterations,
         jobs: config.iterations * (compile_stacks.len() + 1),
