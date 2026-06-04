@@ -208,7 +208,6 @@ pub struct FastNoisePlannerMeta {
     final_slot: BufferSlot,
 }
 
-#[derive(Clone)]
 pub struct FastNoiseState {
     dimension: GraphDimension,
     final_field: String,
@@ -507,6 +506,21 @@ impl PlannerBackend for FastNoisePlanner {
             }
         }
         Ok(())
+    }
+
+    fn updated_state(
+        &self,
+        state: &Self::State,
+        changes: &[Self::Change],
+    ) -> BraidResult<Self::State> {
+        let mut next = FastNoiseState {
+            dimension: state.dimension,
+            final_field: state.final_field.clone(),
+            nodes: state.nodes.clone(),
+            node_keys: state.node_keys.clone(),
+        };
+        self.apply(&mut next, changes)?;
+        Ok(next)
     }
 
     fn compile(

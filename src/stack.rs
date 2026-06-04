@@ -180,15 +180,9 @@ where
             .state
             .lock()
             .map_err(|_| BraidError::poisoned("stack.state"))?;
-        let snapshot = state.clone();
-        self.inner.planner.apply(&mut state, &changes)?;
-        let version_id = match self.inner.compile_from_state(&state) {
-            Ok(version_id) => version_id,
-            Err(error) => {
-                *state = snapshot;
-                return Err(error);
-            }
-        };
+        let next_state = self.inner.planner.updated_state(&state, &changes)?;
+        let version_id = self.inner.compile_from_state(&next_state)?;
+        *state = next_state;
         Ok(version_id)
     }
 

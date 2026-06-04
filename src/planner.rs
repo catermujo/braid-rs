@@ -5,7 +5,7 @@ use crate::scratch::{BatchScratch, PlannerScratch};
 
 pub trait PlannerBackend: Send + Sync + 'static {
     type Spec: Send + 'static;
-    type State: Clone + Send + 'static;
+    type State: Send + 'static;
     type Change: Send + 'static;
     type Query: Send + Sync + 'static;
     type Resolution: Send + 'static;
@@ -14,6 +14,11 @@ pub trait PlannerBackend: Send + Sync + 'static {
     fn init_state(&self, spec: &Self::Spec) -> BraidResult<Self::State>;
     fn reset_state(&self, state: &mut Self::State, spec: &Self::Spec) -> BraidResult<()>;
     fn apply(&self, state: &mut Self::State, changes: &[Self::Change]) -> BraidResult<()>;
+    fn updated_state(
+        &self,
+        state: &Self::State,
+        changes: &[Self::Change],
+    ) -> BraidResult<Self::State>;
     fn compile(
         &self,
         state: &Self::State,

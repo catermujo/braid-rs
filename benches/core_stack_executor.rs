@@ -171,7 +171,6 @@ struct BenchSpec {
     stage2_rounds: u32,
 }
 
-#[derive(Clone)]
 struct BenchState {
     bias: u32,
     multiplier: u32,
@@ -246,6 +245,22 @@ impl PlannerBackend for BenchPlanner {
             }
         }
         Ok(())
+    }
+
+    fn updated_state(
+        &self,
+        state: &Self::State,
+        changes: &[Self::Change],
+    ) -> BraidResult<Self::State> {
+        let mut next = BenchState {
+            bias: state.bias,
+            multiplier: state.multiplier,
+            lane_values: state.lane_values.clone(),
+            stage1_rounds: state.stage1_rounds,
+            stage2_rounds: state.stage2_rounds,
+        };
+        self.apply(&mut next, changes)?;
+        Ok(next)
     }
 
     fn compile(

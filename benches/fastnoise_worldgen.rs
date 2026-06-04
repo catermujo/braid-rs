@@ -1385,6 +1385,14 @@ impl PlannerBackend for NullPlanner {
         Ok(())
     }
 
+    fn updated_state(
+        &self,
+        _state: &Self::State,
+        _changes: &[Self::Change],
+    ) -> BraidResult<Self::State> {
+        Ok(())
+    }
+
     fn compile(
         &self,
         _state: &Self::State,

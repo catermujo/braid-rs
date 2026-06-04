@@ -26,7 +26,6 @@ struct ToySpec {
     delay_ms: u64,
 }
 
-#[derive(Clone)]
 struct ToyState {
     bonus: u32,
     delay_ms: u64,
@@ -72,6 +71,19 @@ impl PlannerBackend for ToyPlanner {
             }
         }
         Ok(())
+    }
+
+    fn updated_state(
+        &self,
+        state: &Self::State,
+        changes: &[Self::Change],
+    ) -> BraidResult<Self::State> {
+        let mut next = ToyState {
+            bonus: state.bonus,
+            delay_ms: state.delay_ms,
+        };
+        self.apply(&mut next, changes)?;
+        Ok(next)
     }
 
     fn compile(
