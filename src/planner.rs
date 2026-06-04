@@ -7,7 +7,7 @@ pub trait PlannerBackend: Send + Sync + 'static {
     type Spec: Send + 'static;
     type State: Send + 'static;
     type Change: Send + 'static;
-    type Query: Send + 'static;
+    type Query: Send + Sync + 'static;
     type Resolution: Send + 'static;
     type PlannerMeta: Send + Sync + 'static;
 

@@ -14,7 +14,7 @@ mod version;
 pub use compute::ComputeBackend;
 pub use cpu::{CpuComputeBackend, CpuKernel, CpuKernelFactory};
 pub use error::{BraidError, BraidResult};
-pub use executor::BraidExecutor;
+pub use executor::{BackendConfig, BackendHandle, BraidExecutor};
 pub use job::{CancelFlag, JobPacket, JobStatus};
 pub use pipeline::{
     BufferAccess, BufferBinding, BufferLayout, BufferSpec, CompiledPlan, DispatchHint, ElementKind,

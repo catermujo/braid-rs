@@ -7,7 +7,7 @@ use crate::pipeline::{
 };
 use crate::planner::PlannerBackend;
 use crate::scratch::{BatchScratch, ComputeScratch, PlannerScratch};
-use crate::{BraidError, BraidExecutor, Stack};
+use crate::{BackendConfig, BraidError, BraidExecutor, Stack};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -186,9 +186,9 @@ impl ComputeBackend for ToyBackend {
 fn stack_update_swaps_versions_without_clobbering_old_jobs() {
     let executor = Arc::new(BraidExecutor::new(2));
     let planner = Arc::new(ToyPlanner);
-    let backend = Arc::new(ToyBackend);
+    let backend = executor.register_backend(Arc::new(ToyBackend), BackendConfig { lane_count: 2 });
     let stack = Stack::create(
-        executor,
+        Arc::clone(&executor),
         planner,
         backend,
         ToySpec {
@@ -212,12 +212,12 @@ fn stack_update_swaps_versions_without_clobbering_old_jobs() {
 fn executor_runs_stacks_in_parallel_with_shared_backend_instance() {
     let executor = Arc::new(BraidExecutor::new(2));
     let planner = Arc::new(ToyPlanner);
-    let backend = Arc::new(ToyBackend);
+    let backend = executor.register_backend(Arc::new(ToyBackend), BackendConfig { lane_count: 2 });
 
     let stack_a = Stack::create(
         Arc::clone(&executor),
         Arc::clone(&planner),
-        Arc::clone(&backend),
+        backend.clone(),
         ToySpec {
             bonus: 10,
             delay_ms: 120,
@@ -249,4 +249,63 @@ fn executor_runs_stacks_in_parallel_with_shared_backend_instance() {
         "elapsed {:?} looked serial",
         elapsed
     );
+}
+
+#[test]
+fn queued_backend_work_does_not_block_other_backends() {
+    let executor = Arc::new(BraidExecutor::new(2));
+    let planner = Arc::new(ToyPlanner);
+    let slow_backend =
+        executor.register_backend(Arc::new(ToyBackend), BackendConfig { lane_count: 1 });
+    let fast_backend =
+        executor.register_backend(Arc::new(ToyBackend), BackendConfig { lane_count: 1 });
+
+    let slow_a = Stack::create(
+        Arc::clone(&executor),
+        Arc::clone(&planner),
+        slow_backend.clone(),
+        ToySpec {
+            bonus: 10,
+            delay_ms: 120,
+        },
+    )
+    .unwrap();
+    let slow_b = Stack::create(
+        Arc::clone(&executor),
+        Arc::clone(&planner),
+        slow_backend,
+        ToySpec {
+            bonus: 20,
+            delay_ms: 120,
+        },
+    )
+    .unwrap();
+    let fast = Stack::create(
+        executor,
+        planner,
+        fast_backend,
+        ToySpec {
+            bonus: 30,
+            delay_ms: 10,
+        },
+    )
+    .unwrap();
+
+    let slow_job_a = slow_a.dispatch(vec![1]).unwrap();
+    let slow_job_b = slow_b.dispatch(vec![1]).unwrap();
+    let fast_job = fast.dispatch(vec![1]).unwrap();
+
+    let start = Instant::now();
+    let fast_out = fast.collect(fast_job).unwrap();
+    let fast_elapsed = start.elapsed();
+
+    assert_eq!(fast_out, vec![31]);
+    assert!(
+        fast_elapsed < Duration::from_millis(80),
+        "fast backend was blocked too long: {:?}",
+        fast_elapsed
+    );
+
+    assert_eq!(slow_a.collect(slow_job_a).unwrap(), vec![11]);
+    assert_eq!(slow_b.collect(slow_job_b).unwrap(), vec![21]);
 }

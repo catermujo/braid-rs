@@ -1,7 +1,7 @@
 use crate::buffer_pool::ReusablePool;
 use crate::compute::ComputeBackend;
 use crate::error::{BraidError, BraidResult};
-use crate::executor::BraidExecutor;
+use crate::executor::{BackendHandle, BraidExecutor};
 use crate::job::{CancelFlag, JobPacket, JobStatus};
 use crate::pipeline::{JobId, VersionId};
 use crate::planner::PlannerBackend;
@@ -57,7 +57,7 @@ where
 {
     executor: Arc<BraidExecutor>,
     planner: Arc<P>,
-    backend: Arc<C>,
+    backend: BackendHandle<C>,
     state: Mutex<P::State>,
     current_version: RwLock<Arc<FrozenStackVersion<P, C>>>,
     planner_scratch: Mutex<PlannerScratch>,
@@ -76,6 +76,18 @@ where
     C: ComputeBackend,
 {
     inner: Arc<StackInner<P, C>>,
+}
+
+struct JobExecution<P, C>
+where
+    P: PlannerBackend,
+    C: ComputeBackend,
+{
+    inner: Arc<StackInner<P, C>>,
+    version: Arc<FrozenStackVersion<P, C>>,
+    queries: Vec<P::Query>,
+    record: Arc<JobRecord<P::Resolution>>,
+    packet: Mutex<Option<JobPacket>>,
 }
 
 impl<P, C> Clone for Stack<P, C>
@@ -98,7 +110,7 @@ where
     pub fn create(
         executor: Arc<BraidExecutor>,
         planner: Arc<P>,
-        backend: Arc<C>,
+        backend: BackendHandle<C>,
         spec: P::Spec,
     ) -> BraidResult<Self> {
         let state = planner.init_state(&spec)?;
@@ -107,7 +119,9 @@ where
         let compiled = planner.compile(&state, &mut planner_scratch)?;
 
         let mut compute_scratch = ComputeScratch::default();
-        let prepared = backend.prepare(&compiled, None, &mut compute_scratch)?;
+        let prepared = backend
+            .backend
+            .prepare(&compiled, None, &mut compute_scratch)?;
         let version = Arc::new(FrozenStackVersion::<P, C> {
             id: 1,
             compiled,
@@ -192,15 +206,21 @@ where
             jobs.insert(job_id, Arc::clone(&record));
         }
 
-        let inner = Arc::clone(&self.inner);
-        let panic_inner = Arc::clone(&inner);
-        let panic_record = Arc::clone(&record);
-        self.inner.executor.submit(move || {
-            if catch_unwind(AssertUnwindSafe(|| inner.run_job(version, queries, record))).is_err() {
-                let _ = panic_inner
-                    .finish_failed(&panic_record, BraidError::from("executor task panicked"));
+        let execution = Arc::new(JobExecution {
+            inner: Arc::clone(&self.inner),
+            version,
+            queries,
+            record,
+            packet: Mutex::new(None),
+        });
+
+        if let Err(error) = execution.schedule_encode() {
+            if let Ok(mut jobs) = self.inner.jobs.lock() {
+                jobs.remove(&job_id);
             }
-        })?;
+            return Err(error);
+        }
+
         Ok(job_id)
     }
 
@@ -306,6 +326,7 @@ where
         };
         let prepared = self
             .backend
+            .backend
             .prepare(&compiled, reuse, &mut compute_scratch)?;
         self.compute_scratch_pool
             .give_back("stack.compute_scratch", compute_scratch)?;
@@ -323,75 +344,6 @@ where
             .map_err(|_| BraidError::poisoned("stack.current_version"))?;
         *current = frozen;
         Ok(version_id)
-    }
-
-    fn run_job(
-        self: &Arc<Self>,
-        version: Arc<FrozenStackVersion<P, C>>,
-        queries: Vec<P::Query>,
-        record: Arc<JobRecord<P::Resolution>>,
-    ) {
-        if record.cancel.is_cancelled() {
-            self.finish_cancelled(&record);
-            return;
-        }
-        if self.mark_running(&record).is_err() {
-            return;
-        }
-
-        let result = self.run_job_inner(&version, &queries, &record.cancel);
-        match result {
-            Ok(values) => {
-                let _ = self.finish_completed(&record, values);
-            }
-            Err(BraidError::Cancelled) => {
-                self.finish_cancelled(&record);
-            }
-            Err(error) => {
-                let _ = self.finish_failed(&record, error);
-            }
-        }
-    }
-
-    fn run_job_inner(
-        &self,
-        version: &FrozenStackVersion<P, C>,
-        queries: &[P::Query],
-        cancel: &CancelFlag,
-    ) -> BraidResult<Vec<P::Resolution>> {
-        let mut packet = self.packet_pool.checkout("stack.packet_pool")?;
-        packet.clear_for_reuse();
-        let mut batch_scratch = self.batch_scratch_pool.checkout("stack.batch_scratch")?;
-        batch_scratch.reset();
-
-        self.planner
-            .encode_batch(&version.compiled, queries, &mut packet, &mut batch_scratch)?;
-
-        for (stage_index, stage) in version.compiled.pipeline.stages.iter().enumerate() {
-            if cancel.is_cancelled() {
-                packet.clear_for_reuse();
-                batch_scratch.reset();
-                self.packet_pool.give_back("stack.packet_pool", packet)?;
-                self.batch_scratch_pool
-                    .give_back("stack.batch_scratch", batch_scratch)?;
-                return Err(BraidError::Cancelled);
-            }
-
-            let prepared = version
-                .prepared
-                .as_ref()
-                .ok_or_else(|| BraidError::from("missing prepared state"))?;
-            self.backend
-                .run_stage(prepared, stage_index, stage, &mut packet, cancel)?;
-        }
-
-        let decoded = self.planner.decode_batch(&version.compiled, &packet)?;
-        packet.clear_for_reuse();
-        batch_scratch.reset();
-        self.packet_pool.give_back("stack.packet_pool", packet)?;
-        self.batch_scratch_pool
-            .give_back("stack.batch_scratch", batch_scratch)?;
-        Ok(decoded)
     }
 
     fn mark_running(&self, record: &Arc<JobRecord<P::Resolution>>) -> BraidResult<()> {
@@ -437,5 +389,206 @@ where
             *state = JobRecordState::Cancelled;
             record.wake.notify_all();
         }
+    }
+}
+
+impl<P, C> JobExecution<P, C>
+where
+    P: PlannerBackend,
+    C: ComputeBackend,
+{
+    fn schedule_encode(self: &Arc<Self>) -> BraidResult<()> {
+        let job = Arc::clone(self);
+        self.inner.executor.submit(move || job.run_encode_task())
+    }
+
+    fn schedule_stage(self: &Arc<Self>, stage_index: usize) -> BraidResult<()> {
+        let job = Arc::clone(self);
+        self.inner
+            .backend
+            .schedule(move || job.run_stage_task(stage_index))
+    }
+
+    fn schedule_decode(self: &Arc<Self>) -> BraidResult<()> {
+        let job = Arc::clone(self);
+        self.inner.executor.submit(move || job.run_decode_task())
+    }
+
+    fn run_encode_task(self: Arc<Self>) {
+        self.run_caught(|job| job.encode_step());
+    }
+
+    fn run_stage_task(self: Arc<Self>, stage_index: usize) {
+        self.run_caught(|job| job.stage_step(stage_index));
+    }
+
+    fn run_decode_task(self: Arc<Self>) {
+        self.run_caught(|job| job.decode_step());
+    }
+
+    fn run_caught<F>(self: Arc<Self>, body: F)
+    where
+        F: FnOnce(&Arc<Self>) -> BraidResult<()>,
+    {
+        let result = catch_unwind(AssertUnwindSafe(|| body(&self)));
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(BraidError::Cancelled)) => {
+                self.cleanup_packet();
+                self.inner.finish_cancelled(&self.record);
+            }
+            Ok(Err(error)) => {
+                self.cleanup_packet();
+                let _ = self.inner.finish_failed(&self.record, error);
+            }
+            Err(_) => {
+                self.cleanup_packet();
+                let _ = self
+                    .inner
+                    .finish_failed(&self.record, BraidError::from("executor task panicked"));
+            }
+        }
+    }
+
+    fn encode_step(self: &Arc<Self>) -> BraidResult<()> {
+        if self.record.cancel.is_cancelled() {
+            return Err(BraidError::Cancelled);
+        }
+
+        self.inner.mark_running(&self.record)?;
+
+        let mut packet = self.inner.packet_pool.checkout("stack.packet_pool")?;
+        packet.clear_for_reuse();
+        let mut batch_scratch = self
+            .inner
+            .batch_scratch_pool
+            .checkout("stack.batch_scratch")?;
+        batch_scratch.reset();
+
+        let encode_result = self.inner.planner.encode_batch(
+            &self.version.compiled,
+            &self.queries,
+            &mut packet,
+            &mut batch_scratch,
+        );
+
+        batch_scratch.reset();
+        self.inner
+            .batch_scratch_pool
+            .give_back("stack.batch_scratch", batch_scratch)?;
+
+        if let Err(error) = encode_result {
+            packet.clear_for_reuse();
+            self.inner
+                .packet_pool
+                .give_back("stack.packet_pool", packet)?;
+            return Err(error);
+        }
+
+        self.store_packet(packet)?;
+        if self.version.compiled.pipeline.stages.is_empty() {
+            self.schedule_decode()
+        } else {
+            self.schedule_stage(0)
+        }
+    }
+
+    fn stage_step(self: &Arc<Self>, stage_index: usize) -> BraidResult<()> {
+        if self.record.cancel.is_cancelled() {
+            return Err(BraidError::Cancelled);
+        }
+
+        {
+            let mut packet = self
+                .packet
+                .lock()
+                .map_err(|_| BraidError::poisoned("job_execution.packet"))?;
+            let packet = packet
+                .as_mut()
+                .ok_or_else(|| BraidError::from("missing job packet"))?;
+            let prepared = self
+                .version
+                .prepared
+                .as_ref()
+                .ok_or_else(|| BraidError::from("missing prepared state"))?;
+            let stage = self
+                .version
+                .compiled
+                .pipeline
+                .stages
+                .get(stage_index)
+                .ok_or_else(|| BraidError::from("missing stage"))?;
+            self.inner.backend.backend.run_stage(
+                prepared,
+                stage_index,
+                stage,
+                packet,
+                &self.record.cancel,
+            )?;
+        }
+
+        let next_stage = stage_index + 1;
+        if next_stage < self.version.compiled.pipeline.stages.len() {
+            self.schedule_stage(next_stage)
+        } else {
+            self.schedule_decode()
+        }
+    }
+
+    fn decode_step(self: &Arc<Self>) -> BraidResult<()> {
+        if self.record.cancel.is_cancelled() {
+            return Err(BraidError::Cancelled);
+        }
+
+        let mut packet = self.take_packet()?;
+        let decoded = self
+            .inner
+            .planner
+            .decode_batch(&self.version.compiled, &packet)?;
+        packet.clear_for_reuse();
+        self.inner
+            .packet_pool
+            .give_back("stack.packet_pool", packet)?;
+        self.inner.finish_completed(&self.record, decoded)
+    }
+
+    fn store_packet(&self, packet: JobPacket) -> BraidResult<()> {
+        let mut slot = self
+            .packet
+            .lock()
+            .map_err(|_| BraidError::poisoned("job_execution.packet"))?;
+        if slot.is_some() {
+            return Err(BraidError::from("job packet already stored"));
+        }
+        *slot = Some(packet);
+        Ok(())
+    }
+
+    fn take_packet(&self) -> BraidResult<JobPacket> {
+        let mut slot = self
+            .packet
+            .lock()
+            .map_err(|_| BraidError::poisoned("job_execution.packet"))?;
+        slot.take()
+            .ok_or_else(|| BraidError::from("missing job packet"))
+    }
+
+    fn cleanup_packet(&self) {
+        let packet = {
+            let mut slot = match self.packet.lock() {
+                Ok(slot) => slot,
+                Err(_) => return,
+            };
+            slot.take()
+        };
+
+        let Some(mut packet) = packet else {
+            return;
+        };
+        packet.clear_for_reuse();
+        let _ = self
+            .inner
+            .packet_pool
+            .give_back("stack.packet_pool", packet);
     }
 }

@@ -1,8 +1,8 @@
 use braid::{
-    BatchScratch, BraidError, BraidExecutor, BraidResult, BufferAccess, BufferBinding,
-    BufferLayout, BufferSpec, CancelFlag, CompiledPlan, ComputeBackend, ComputeScratch,
-    DispatchHint, ElementKind, JobPacket, KernelSpec, PipelineShape, PlannerBackend,
-    PlannerScratch, Stack, StageSpec,
+    BackendConfig, BatchScratch, BraidError, BraidExecutor, BraidResult, BufferAccess,
+    BufferBinding, BufferLayout, BufferSpec, CancelFlag, CompiledPlan, ComputeBackend,
+    ComputeScratch, DispatchHint, ElementKind, JobPacket, KernelSpec, PipelineShape,
+    PlannerBackend, PlannerScratch, Stack, StageSpec,
 };
 use std::hint::black_box;
 use std::sync::{Arc, Mutex};
@@ -30,6 +30,9 @@ fn main() -> BraidResult<()> {
     let reports = vec![
         bench_parallel_stacks(&config)?,
         bench_serialized_backend_stacks(&config)?,
+        bench_hidden_serialized_backend_stacks(&config)?,
+        bench_mixed_backend_isolation_declared(&config)?,
+        bench_mixed_backend_isolation_hidden(&config)?,
         bench_queue_pressure(&config)?,
         bench_update_between_runs(&config)?,
         bench_dependency_chain(&config)?,
@@ -105,10 +108,13 @@ struct BenchReport {
     jobs: usize,
     queries: usize,
     checksum: u64,
+    aux_label: Option<&'static str>,
+    aux_elapsed: Duration,
+    aux_units: usize,
 }
 
 fn print_report(report: &BenchReport) {
-    println!(
+    let mut line = format!(
         "{:28} total={:?} ns/iter={:.2} ns/job={:.2} ns/query={:.2} checksum={}",
         report.name,
         report.elapsed,
@@ -117,6 +123,17 @@ fn print_report(report: &BenchReport) {
         ns_per(report.elapsed, report.queries),
         report.checksum
     );
+    if let Some(label) = report.aux_label {
+        line.push_str(
+            format!(
+                " {}={:.2}",
+                label,
+                ns_per(report.aux_elapsed, report.aux_units)
+            )
+            .as_str(),
+        );
+    }
+    println!("{line}");
 }
 
 fn ns_per(elapsed: Duration, units: usize) -> f64 {
@@ -153,8 +170,8 @@ enum BenchChange {
 }
 
 struct BenchBackend {
-    serialize_stages: bool,
-    gate: Mutex<()>,
+    hidden_serialize: bool,
+    hidden_gate: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -319,11 +336,11 @@ impl ComputeBackend for BenchBackend {
         packet: &mut JobPacket,
         cancel: &CancelFlag,
     ) -> BraidResult<()> {
-        let _guard = if self.serialize_stages {
+        let _guard = if self.hidden_serialize {
             Some(
-                self.gate
+                self.hidden_gate
                     .lock()
-                    .map_err(|_| BraidError::poisoned("bench_backend.gate"))?,
+                    .map_err(|_| BraidError::poisoned("bench_backend.hidden_gate"))?,
             )
         } else {
             None
@@ -342,17 +359,17 @@ impl ComputeBackend for BenchBackend {
 }
 
 impl BenchBackend {
-    fn concurrent() -> Self {
+    fn plain() -> Self {
         Self {
-            serialize_stages: false,
-            gate: Mutex::new(()),
+            hidden_serialize: false,
+            hidden_gate: Mutex::new(()),
         }
     }
 
-    fn serialized() -> Self {
+    fn hidden_serialized() -> Self {
         Self {
-            serialize_stages: true,
-            gate: Mutex::new(()),
+            hidden_serialize: true,
+            hidden_gate: Mutex::new(()),
         }
     }
 }
@@ -434,7 +451,12 @@ fn mix32(mut value: u32) -> u32 {
 fn bench_parallel_stacks(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
     let stacks = make_stack_group(&executor, &planner, &backend, config, config.stack_count)?;
 
     warm_parallel_stacks(&stacks, config.batch_size)?;
@@ -465,13 +487,19 @@ fn bench_parallel_stacks(config: &BenchConfig) -> BraidResult<BenchReport> {
         jobs: config.iterations * stacks.len(),
         queries: config.iterations * stacks.len() * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn bench_serialized_backend_stacks(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::serialized());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig { lane_count: 1 },
+    );
     let stacks = make_stack_group(&executor, &planner, &backend, config, config.stack_count)?;
 
     warm_parallel_stacks(&stacks, config.batch_size)?;
@@ -496,19 +524,216 @@ fn bench_serialized_backend_stacks(config: &BenchConfig) -> BraidResult<BenchRep
     }
 
     Ok(BenchReport {
-        name: "serialized_backend",
+        name: "serialized_declared",
         elapsed: start.elapsed(),
         iterations: config.iterations,
         jobs: config.iterations * stacks.len(),
         queries: config.iterations * stacks.len() * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
+    })
+}
+
+fn bench_hidden_serialized_backend_stacks(config: &BenchConfig) -> BraidResult<BenchReport> {
+    let executor = Arc::new(BraidExecutor::new(config.workers));
+    let planner = Arc::new(BenchPlanner);
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::hidden_serialized()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
+    let stacks = make_stack_group(&executor, &planner, &backend, config, config.stack_count)?;
+
+    warm_parallel_stacks(&stacks, config.batch_size)?;
+
+    let start = Instant::now();
+    let mut checksum = 0u64;
+    for iter in 0..config.iterations {
+        let mut jobs = Vec::with_capacity(stacks.len());
+        for (stack_index, stack) in stacks.iter().enumerate() {
+            let queries = make_queries(
+                ((iter * stacks.len()) + stack_index) as u32,
+                config.batch_size,
+            );
+            jobs.push((stack_index, stack.dispatch(queries)?));
+        }
+
+        for (stack_index, job) in jobs {
+            let values = stacks[stack_index].collect(job)?;
+            checksum = checksum.wrapping_add(digest(values.as_slice()));
+            black_box(&values);
+        }
+    }
+
+    Ok(BenchReport {
+        name: "serialized_hidden",
+        elapsed: start.elapsed(),
+        iterations: config.iterations,
+        jobs: config.iterations * stacks.len(),
+        queries: config.iterations * stacks.len() * config.batch_size,
+        checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
+    })
+}
+
+fn bench_mixed_backend_isolation_declared(config: &BenchConfig) -> BraidResult<BenchReport> {
+    let executor = Arc::new(BraidExecutor::new(config.workers.max(2)));
+    let planner = Arc::new(BenchPlanner);
+    let slow_batch_size = config.batch_size * 4;
+    let fast_batch_size = (config.batch_size / 8).max(16);
+    let slow_backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig { lane_count: 1 },
+    );
+    let fast_backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
+
+    let slow_stacks = make_stack_group(
+        &executor,
+        &planner,
+        &slow_backend,
+        config,
+        config.stack_count.max(4),
+    )?;
+    let fast_stack = make_stack(&executor, &planner, &fast_backend, config, 9_999)?;
+
+    warm_parallel_stacks(&slow_stacks, slow_batch_size)?;
+    warm_queue_pressure(&fast_stack, fast_batch_size)?;
+
+    let start = Instant::now();
+    let mut fast_elapsed = Duration::ZERO;
+    let mut checksum = 0u64;
+    for iter in 0..config.iterations {
+        let mut slow_jobs = Vec::with_capacity(slow_stacks.len());
+        for (stack_index, stack) in slow_stacks.iter().enumerate() {
+            slow_jobs.push((
+                stack_index,
+                stack.dispatch(make_queries(
+                    ((iter * slow_stacks.len()) + stack_index) as u32,
+                    slow_batch_size,
+                ))?,
+            ));
+        }
+
+        let fast_start = Instant::now();
+        let fast_job =
+            fast_stack.dispatch(make_queries((iter as u32) ^ 0xFA57, fast_batch_size))?;
+        let fast_values = fast_stack.collect(fast_job)?;
+        fast_elapsed += fast_start.elapsed();
+        checksum = checksum.wrapping_add(digest(fast_values.as_slice()));
+        black_box(&fast_values);
+
+        for (stack_index, job) in slow_jobs {
+            let slow_values = slow_stacks[stack_index].collect(job)?;
+            checksum = checksum.wrapping_add(digest(slow_values.as_slice()));
+            black_box(&slow_values);
+        }
+    }
+
+    Ok(BenchReport {
+        name: "mixed_isolation_declared",
+        elapsed: start.elapsed(),
+        iterations: config.iterations,
+        jobs: config.iterations * (slow_stacks.len() + 1),
+        queries: config.iterations * ((slow_stacks.len() * slow_batch_size) + fast_batch_size),
+        checksum,
+        aux_label: Some("fast_ns/job"),
+        aux_elapsed: fast_elapsed,
+        aux_units: config.iterations,
+    })
+}
+
+fn bench_mixed_backend_isolation_hidden(config: &BenchConfig) -> BraidResult<BenchReport> {
+    let executor = Arc::new(BraidExecutor::new(config.workers.max(2)));
+    let planner = Arc::new(BenchPlanner);
+    let slow_batch_size = config.batch_size * 4;
+    let fast_batch_size = (config.batch_size / 8).max(16);
+    let slow_backend = executor.register_backend(
+        Arc::new(BenchBackend::hidden_serialized()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
+    let fast_backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
+
+    let slow_stacks = make_stack_group(
+        &executor,
+        &planner,
+        &slow_backend,
+        config,
+        config.stack_count.max(4),
+    )?;
+    let fast_stack = make_stack(&executor, &planner, &fast_backend, config, 10_001)?;
+
+    warm_parallel_stacks(&slow_stacks, slow_batch_size)?;
+    warm_queue_pressure(&fast_stack, fast_batch_size)?;
+
+    let start = Instant::now();
+    let mut fast_elapsed = Duration::ZERO;
+    let mut checksum = 0u64;
+    for iter in 0..config.iterations {
+        let mut slow_jobs = Vec::with_capacity(slow_stacks.len());
+        for (stack_index, stack) in slow_stacks.iter().enumerate() {
+            slow_jobs.push((
+                stack_index,
+                stack.dispatch(make_queries(
+                    ((iter * slow_stacks.len()) + stack_index) as u32,
+                    slow_batch_size,
+                ))?,
+            ));
+        }
+
+        let fast_start = Instant::now();
+        let fast_job =
+            fast_stack.dispatch(make_queries((iter as u32) ^ 0xFA57, fast_batch_size))?;
+        let fast_values = fast_stack.collect(fast_job)?;
+        fast_elapsed += fast_start.elapsed();
+        checksum = checksum.wrapping_add(digest(fast_values.as_slice()));
+        black_box(&fast_values);
+
+        for (stack_index, job) in slow_jobs {
+            let slow_values = slow_stacks[stack_index].collect(job)?;
+            checksum = checksum.wrapping_add(digest(slow_values.as_slice()));
+            black_box(&slow_values);
+        }
+    }
+
+    Ok(BenchReport {
+        name: "mixed_isolation_hidden",
+        elapsed: start.elapsed(),
+        iterations: config.iterations,
+        jobs: config.iterations * (slow_stacks.len() + 1),
+        queries: config.iterations * ((slow_stacks.len() * slow_batch_size) + fast_batch_size),
+        checksum,
+        aux_label: Some("fast_ns/job"),
+        aux_elapsed: fast_elapsed,
+        aux_units: config.iterations,
     })
 }
 
 fn bench_queue_pressure(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
     let stack = make_stack(&executor, &planner, &backend, config, 1)?;
 
     warm_queue_pressure(&stack, config.batch_size)?;
@@ -536,13 +761,21 @@ fn bench_queue_pressure(config: &BenchConfig) -> BraidResult<BenchReport> {
         jobs: config.iterations * config.queue_depth,
         queries: config.iterations * config.queue_depth * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn bench_update_between_runs(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
     let stack = make_stack(&executor, &planner, &backend, config, 3)?;
 
     warm_update_between_runs(&stack, config)?;
@@ -574,13 +807,21 @@ fn bench_update_between_runs(config: &BenchConfig) -> BraidResult<BenchReport> {
         jobs: config.iterations,
         queries: config.iterations * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn bench_dependency_chain(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
     let stacks = make_stack_group(
         &executor,
         &planner,
@@ -611,13 +852,21 @@ fn bench_dependency_chain(config: &BenchConfig) -> BraidResult<BenchReport> {
         jobs: config.iterations * config.dependency_depth,
         queries: config.iterations * config.dependency_depth * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn bench_version_swap_inflight(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers.max(2)));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers.max(2),
+        },
+    );
     let stack = make_stack(&executor, &planner, &backend, config, 7)?;
     let iterations = (config.iterations / 2).max(1);
     let inflight_batch_size = config.batch_size * 4;
@@ -656,13 +905,21 @@ fn bench_version_swap_inflight(config: &BenchConfig) -> BraidResult<BenchReport>
         jobs: iterations * 2,
         queries: iterations * inflight_batch_size * 2,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn bench_create_stack_and_run(config: &BenchConfig) -> BraidResult<BenchReport> {
     let executor = Arc::new(BraidExecutor::new(config.workers));
     let planner = Arc::new(BenchPlanner);
-    let backend = Arc::new(BenchBackend::concurrent());
+    let backend = executor.register_backend(
+        Arc::new(BenchBackend::plain()),
+        BackendConfig {
+            lane_count: config.workers,
+        },
+    );
     let iterations = (config.iterations / 2).max(1);
 
     warm_create_stack_and_run(&executor, &planner, &backend, config)?;
@@ -684,13 +941,16 @@ fn bench_create_stack_and_run(config: &BenchConfig) -> BraidResult<BenchReport> 
         jobs: iterations,
         queries: iterations * config.batch_size,
         checksum,
+        aux_label: None,
+        aux_elapsed: Duration::ZERO,
+        aux_units: 0,
     })
 }
 
 fn make_stack_group(
     executor: &Arc<BraidExecutor>,
     planner: &Arc<BenchPlanner>,
-    backend: &Arc<BenchBackend>,
+    backend: &braid::BackendHandle<BenchBackend>,
     config: &BenchConfig,
     count: usize,
 ) -> BraidResult<Vec<Stack<BenchPlanner, BenchBackend>>> {
@@ -704,14 +964,14 @@ fn make_stack_group(
 fn make_stack(
     executor: &Arc<BraidExecutor>,
     planner: &Arc<BenchPlanner>,
-    backend: &Arc<BenchBackend>,
+    backend: &braid::BackendHandle<BenchBackend>,
     config: &BenchConfig,
     seed: usize,
 ) -> BraidResult<Stack<BenchPlanner, BenchBackend>> {
     Stack::create(
         Arc::clone(executor),
         Arc::clone(planner),
-        Arc::clone(backend),
+        backend.clone(),
         make_spec(seed as u32, config),
     )
 }
@@ -828,7 +1088,7 @@ fn warm_version_swap_inflight(
 fn warm_create_stack_and_run(
     executor: &Arc<BraidExecutor>,
     planner: &Arc<BenchPlanner>,
-    backend: &Arc<BenchBackend>,
+    backend: &braid::BackendHandle<BenchBackend>,
     config: &BenchConfig,
 ) -> BraidResult<()> {
     let stack = make_stack(executor, planner, backend, config, 31)?;
