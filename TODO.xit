@@ -1,4 +1,8 @@
-[ ] fastnoiselite demo
+[x] + 'static
+[ ] enum conversions (use from)
+[ ] external need for Arc::new
+[ ] catch_unwind
+[ ] built-in DAG resolver
 
 future work
 [ ] GPU executor test

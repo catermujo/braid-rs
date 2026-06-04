@@ -291,12 +291,11 @@ impl BackendRuntime {
             }
         };
 
-        if let Some(task) = next {
-            if self.submit_ready(task).is_err() {
-                if let Ok(mut state) = self.state.lock() {
-                    state.lanes_in_use = state.lanes_in_use.saturating_sub(1);
-                }
-            }
+        if let Some(task) = next
+            && self.submit_ready(task).is_err()
+            && let Ok(mut state) = self.state.lock()
+        {
+            state.lanes_in_use = state.lanes_in_use.saturating_sub(1);
         }
         self.prepare_wake.notify_all();
     }

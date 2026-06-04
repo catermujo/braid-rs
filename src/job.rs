@@ -154,6 +154,48 @@ impl JobPacket {
             })
     }
 
+    pub fn with_f32_buffers<R>(
+        &mut self,
+        slots: &[u16],
+        f: impl FnOnce(Vec<&mut [f32]>) -> BraidResult<R>,
+    ) -> BraidResult<R> {
+        let mut indices = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let Some(index) = self.buffers.iter().position(|buffer| buffer.slot == *slot) else {
+                return Err(BraidError::MissingBuffer(*slot));
+            };
+            if indices.contains(&index) {
+                return Err(BraidError::from("duplicate f32 buffer slot request"));
+            }
+            let buffer = &self.buffers[index];
+            if buffer.data.kind() != ElementKind::F32 {
+                return Err(BraidError::InvalidBufferType {
+                    slot: *slot,
+                    expected: ElementKind::F32,
+                });
+            }
+            indices.push(index);
+        }
+
+        let mut ptrs = Vec::with_capacity(indices.len());
+        for index in indices {
+            let buffer = &mut self.buffers[index];
+            match &mut buffer.data {
+                BufferData::F32(vals) => ptrs.push(vals.as_mut_slice() as *mut [f32]),
+                _ => unreachable!(),
+            }
+        }
+
+        let mut views = Vec::with_capacity(ptrs.len());
+        for ptr in ptrs {
+            // The requested slots are unique, so these mutable views do not alias.
+            unsafe {
+                views.push(&mut *ptr);
+            }
+        }
+        f(views)
+    }
+
     fn view(&self, slot: u16, expected: ElementKind) -> BraidResult<&BufferData> {
         let buffer = self
             .buffers
