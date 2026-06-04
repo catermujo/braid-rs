@@ -17,8 +17,9 @@ pub use error::{BraidError, BraidResult};
 pub use executor::{BackendConfig, BackendHandle, BraidExecutor};
 pub use job::{CancelFlag, JobPacket, JobStatus};
 pub use pipeline::{
-    BufferAccess, BufferBinding, BufferLayout, BufferSpec, CompiledPlan, DispatchHint, ElementKind,
-    JobId, KernelSpec, PipelineShape, StageSpec, StaticBuffer, StaticBufferSet, VersionId,
+    BufferAccess, BufferBinding, BufferLayout, BufferSlot, BufferSpec, CompiledPlan, DispatchHint,
+    ElementKind, JobId, KernelKind, KernelSpec, PipelineShape, PlanBuilder, StageSpec,
+    StaticBuffer, StaticBufferSet, VersionId,
 };
 pub use planner::PlannerBackend;
 pub use scratch::{BatchScratch, ComputeScratch, PlannerScratch};

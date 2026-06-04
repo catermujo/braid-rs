@@ -2,8 +2,8 @@ use crate::compute::ComputeBackend;
 use crate::error::BraidResult;
 use crate::job::{CancelFlag, JobPacket};
 use crate::pipeline::{
-    BufferAccess, BufferBinding, BufferData, BufferLayout, BufferSpec, CompiledPlan, DispatchHint,
-    ElementKind, KernelSpec, PipelineShape, StageSpec, StaticBuffer,
+    BufferBinding, BufferData, BufferSlot, BufferSpec, CompiledPlan, ElementKind, KernelKind,
+    KernelSpec, StageSpec, StaticBuffer,
 };
 use crate::planner::PlannerBackend;
 use crate::scratch::{BatchScratch, ComputeScratch, PlannerScratch};
@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TOY_INPUT_SLOT: u16 = 0;
-const TOY_OUTPUT_SLOT: u16 = 1;
-const TOY_BONUS_SLOT: u16 = 2;
-const TOY_KIND: u32 = 77;
+const TOY_INPUT_SLOT: BufferSlot = BufferSlot::new(0);
+const TOY_OUTPUT_SLOT: BufferSlot = BufferSlot::new(1);
+const TOY_BONUS_SLOT: BufferSlot = BufferSlot::new(2);
+const TOY_KIND: KernelKind = KernelKind::new(77);
 
 #[derive(Default)]
 struct ToyPlanner;
@@ -88,53 +88,28 @@ impl PlannerBackend for ToyPlanner {
         scratch
             .bytes
             .extend_from_slice(&state.delay_ms.to_le_bytes());
-        Ok(CompiledPlan {
-            pipeline: PipelineShape {
-                buffers: vec![
-                    BufferSpec {
-                        slot: TOY_INPUT_SLOT,
-                        element_kind: ElementKind::U32,
-                        layout: BufferLayout::PerQueryScalar,
-                    },
-                    BufferSpec {
-                        slot: TOY_OUTPUT_SLOT,
-                        element_kind: ElementKind::U32,
-                        layout: BufferLayout::PerQueryScalar,
-                    },
-                    BufferSpec {
-                        slot: TOY_BONUS_SLOT,
-                        element_kind: ElementKind::U32,
-                        layout: BufferLayout::Dynamic,
-                    },
-                ],
-                stages: vec![StageSpec {
-                    kernels: vec![KernelSpec {
-                        kind_id: TOY_KIND,
-                        payload: Arc::from(scratch.bytes.clone()),
-                        bindings: vec![
-                            BufferBinding {
-                                slot: TOY_INPUT_SLOT,
-                                access: BufferAccess::Read,
-                            },
-                            BufferBinding {
-                                slot: TOY_OUTPUT_SLOT,
-                                access: BufferAccess::Write,
-                            },
-                            BufferBinding {
-                                slot: TOY_BONUS_SLOT,
-                                access: BufferAccess::Read,
-                            },
-                        ],
-                        dispatch: DispatchHint::WholeBatch,
-                    }],
-                }],
-            },
-            static_buffers: vec![StaticBuffer {
-                slot: TOY_BONUS_SLOT,
-                data: BufferData::U32(vec![state.bonus]),
-            }],
-            planner_meta: (),
-        })
+        let mut plan = CompiledPlan::builder(());
+        plan.buffer(BufferSpec::per_query_scalar(
+            TOY_INPUT_SLOT,
+            ElementKind::U32,
+        ))
+        .buffer(BufferSpec::per_query_scalar(
+            TOY_OUTPUT_SLOT,
+            ElementKind::U32,
+        ))
+        .buffer(BufferSpec::dynamic(TOY_BONUS_SLOT, ElementKind::U32))
+        .stage(StageSpec::single(
+            KernelSpec::new(TOY_KIND, scratch.bytes.clone()).with_bindings([
+                BufferBinding::read(TOY_INPUT_SLOT),
+                BufferBinding::write(TOY_OUTPUT_SLOT),
+                BufferBinding::read(TOY_BONUS_SLOT),
+            ]),
+        ))
+        .static_buffer(StaticBuffer::new(
+            TOY_BONUS_SLOT,
+            BufferData::U32(vec![state.bonus]),
+        ));
+        Ok(plan.build())
     }
 
     fn encode_batch(

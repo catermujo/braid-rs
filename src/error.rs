@@ -1,4 +1,4 @@
-use crate::pipeline::ElementKind;
+use crate::pipeline::{BufferSlot, ElementKind, KernelKind};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -9,10 +9,10 @@ pub enum BraidError {
     Cancelled,
     UnknownJob,
     ExecutorShutdown,
-    BackendRejectedKernel(u32),
-    MissingBuffer(u16),
+    BackendRejectedKernel(KernelKind),
+    MissingBuffer(BufferSlot),
     InvalidBufferType {
-        slot: u16,
+        slot: BufferSlot,
         expected: ElementKind,
     },
     DuplicateId {

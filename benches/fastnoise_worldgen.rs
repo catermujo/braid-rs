@@ -1,5 +1,5 @@
 use braid::{
-    BackendConfig, BackendHandle, BatchScratch, BraidExecutor, BraidResult, CancelFlag,
+    BackendConfig, BackendHandle, BatchScratch, BraidExecutor, BraidResult, BufferSlot, CancelFlag,
     CompiledPlan, ComputeBackend, ComputeScratch, JobPacket, PipelineShape, PlannerBackend,
     PlannerScratch, Stack,
 };
@@ -10,6 +10,8 @@ use braid_fastnoise::{
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const NULL_QUERY_SLOT: BufferSlot = BufferSlot::new(0);
 
 fn main() -> BraidResult<()> {
     let config = BenchConfig::from_args();
@@ -1406,7 +1408,7 @@ impl PlannerBackend for NullPlanner {
         _scratch: &mut BatchScratch,
     ) -> BraidResult<()> {
         packet.set_query_count(queries.len());
-        let values = packet.ensure_u32(0, queries.len());
+        let values = packet.ensure_u32(NULL_QUERY_SLOT, queries.len());
         values.copy_from_slice(queries);
         Ok(())
     }
@@ -1416,7 +1418,7 @@ impl PlannerBackend for NullPlanner {
         _plan: &CompiledPlan<Self::PlannerMeta>,
         packet: &JobPacket,
     ) -> BraidResult<Vec<Self::Resolution>> {
-        Ok(packet.u32(0)?.to_vec())
+        Ok(packet.u32(NULL_QUERY_SLOT)?.to_vec())
     }
 }
 

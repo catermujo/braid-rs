@@ -6,30 +6,70 @@ pub use fastnoise_lite::{
 };
 
 use braid::{
-    BatchScratch, BraidError, BraidResult, BufferAccess, BufferBinding, BufferLayout, BufferSpec,
-    CancelFlag, CompiledPlan, ComputeScratch, CpuComputeBackend, CpuKernel, CpuKernelFactory,
-    DispatchHint, ElementKind, JobPacket, KernelSpec, PipelineShape, PlannerBackend,
-    PlannerScratch, SlotKey, SlotTable, StageSpec,
+    BatchScratch, BraidError, BraidResult, BufferBinding, BufferSlot, BufferSpec, CancelFlag,
+    CompiledPlan, ComputeScratch, CpuComputeBackend, CpuKernel, CpuKernelFactory, ElementKind,
+    JobPacket, KernelKind, KernelSpec, PlannerBackend, PlannerScratch, SlotKey, SlotTable,
+    StageSpec,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 pub type FastNoiseCpuBackend = CpuComputeBackend;
 
-const INIT_GRID_2D: u32 = 0xF001;
-const INIT_GRID_3D: u32 = 0xF002;
-const WARP_2D: u32 = 0xF100;
-const WARP_3D: u32 = 0xF101;
-const SAMPLE_2D: u32 = 0xF200;
-const SAMPLE_3D: u32 = 0xF201;
-const COMBINE: u32 = 0xF300;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FastNoiseKernel {
+    InitGrid2d,
+    InitGrid3d,
+    Warp2d,
+    Warp3d,
+    Sample2d,
+    Sample3d,
+    Combine,
+}
 
-const SLOT_QUERY_META: u16 = 0;
-const SLOT_QUERY_F32: u16 = 1;
-const SLOT_QUERY_OFFSETS: u16 = 2;
-const SLOT_BASE_X: u16 = 10;
-const SLOT_BASE_Y: u16 = 11;
-const SLOT_BASE_Z: u16 = 12;
+impl FastNoiseKernel {
+    const fn kind(self) -> KernelKind {
+        match self {
+            Self::InitGrid2d => KernelKind::new(0xF001),
+            Self::InitGrid3d => KernelKind::new(0xF002),
+            Self::Warp2d => KernelKind::new(0xF100),
+            Self::Warp3d => KernelKind::new(0xF101),
+            Self::Sample2d => KernelKind::new(0xF200),
+            Self::Sample3d => KernelKind::new(0xF201),
+            Self::Combine => KernelKind::new(0xF300),
+        }
+    }
+}
+
+impl From<FastNoiseKernel> for KernelKind {
+    fn from(value: FastNoiseKernel) -> Self {
+        value.kind()
+    }
+}
+
+impl TryFrom<KernelKind> for FastNoiseKernel {
+    type Error = ();
+
+    fn try_from(value: KernelKind) -> Result<Self, Self::Error> {
+        match value.raw() {
+            0xF001 => Ok(Self::InitGrid2d),
+            0xF002 => Ok(Self::InitGrid3d),
+            0xF100 => Ok(Self::Warp2d),
+            0xF101 => Ok(Self::Warp3d),
+            0xF200 => Ok(Self::Sample2d),
+            0xF201 => Ok(Self::Sample3d),
+            0xF300 => Ok(Self::Combine),
+            _ => Err(()),
+        }
+    }
+}
+
+const SLOT_QUERY_META: BufferSlot = BufferSlot::new(0);
+const SLOT_QUERY_F32: BufferSlot = BufferSlot::new(1);
+const SLOT_QUERY_OFFSETS: BufferSlot = BufferSlot::new(2);
+const SLOT_BASE_X: BufferSlot = BufferSlot::new(10);
+const SLOT_BASE_Y: BufferSlot = BufferSlot::new(11);
+const SLOT_BASE_Z: BufferSlot = BufferSlot::new(12);
 const SLOT_DYNAMIC_START: u16 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,15 +189,15 @@ pub fn make_cpu_backend() -> FastNoiseCpuBackend {
     let factory: Arc<dyn CpuKernelFactory> = Arc::new(FastNoiseKernelFactory);
     let mut backend = CpuComputeBackend::new();
     for kind in [
-        INIT_GRID_2D,
-        INIT_GRID_3D,
-        WARP_2D,
-        WARP_3D,
-        SAMPLE_2D,
-        SAMPLE_3D,
-        COMBINE,
+        FastNoiseKernel::InitGrid2d,
+        FastNoiseKernel::InitGrid3d,
+        FastNoiseKernel::Warp2d,
+        FastNoiseKernel::Warp3d,
+        FastNoiseKernel::Sample2d,
+        FastNoiseKernel::Sample3d,
+        FastNoiseKernel::Combine,
     ] {
-        backend.register_factory(kind, Arc::clone(&factory));
+        backend.register_factory(kind.into(), Arc::clone(&factory));
     }
     backend
 }
@@ -165,7 +205,7 @@ pub fn make_cpu_backend() -> FastNoiseCpuBackend {
 #[derive(Clone, Debug)]
 pub struct FastNoisePlannerMeta {
     dimension: GraphDimension,
-    final_slot: u16,
+    final_slot: BufferSlot,
 }
 
 #[derive(Clone)]
@@ -178,9 +218,9 @@ pub struct FastNoiseState {
 
 #[derive(Clone, Copy, Debug)]
 struct PositionSlots {
-    x: u16,
-    y: u16,
-    z: Option<u16>,
+    x: BufferSlot,
+    y: BufferSlot,
+    z: Option<BufferSlot>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,20 +248,20 @@ struct Warp3dKernel {
 
 struct Sample2dKernel {
     source: PositionSlots,
-    output: u16,
+    output: BufferSlot,
     noise: FastNoiseLite,
 }
 
 struct Sample3dKernel {
     source: PositionSlots,
-    output: u16,
+    output: BufferSlot,
     noise: FastNoiseLite,
 }
 
 struct CombineKernel {
     op: CombineOp,
-    inputs: Vec<u16>,
-    output: u16,
+    inputs: Vec<BufferSlot>,
+    output: BufferSlot,
     params: Vec<f32>,
 }
 
@@ -473,66 +513,68 @@ impl CpuKernelFactory for FastNoiseKernelFactory {
         kernel: &KernelSpec,
         _scratch: &mut ComputeScratch,
     ) -> BraidResult<Box<dyn CpuKernel>> {
-        match kernel.kind_id {
-            INIT_GRID_2D => Ok(Box::new(InitGrid2dKernel)),
-            INIT_GRID_3D => Ok(Box::new(InitGrid3dKernel)),
-            WARP_2D => {
+        let kind = FastNoiseKernel::try_from(kernel.kind_id)
+            .map_err(|_| BraidError::BackendRejectedKernel(kernel.kind_id))?;
+        match kind {
+            FastNoiseKernel::InitGrid2d => Ok(Box::new(InitGrid2dKernel)),
+            FastNoiseKernel::InitGrid3d => Ok(Box::new(InitGrid3dKernel)),
+            FastNoiseKernel::Warp2d => {
                 let mut cursor = Cursor::new(&kernel.payload);
                 Ok(Box::new(Warp2dKernel {
                     source: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
                         z: None,
                     },
                     output: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
                         z: None,
                     },
                     noise: cursor.read_noise()?,
                 }))
             }
-            WARP_3D => {
+            FastNoiseKernel::Warp3d => {
                 let mut cursor = Cursor::new(&kernel.payload);
                 Ok(Box::new(Warp3dKernel {
                     source: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
-                        z: Some(cursor.read_u16()?),
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
+                        z: Some(cursor.read_slot()?),
                     },
                     output: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
-                        z: Some(cursor.read_u16()?),
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
+                        z: Some(cursor.read_slot()?),
                     },
                     noise: cursor.read_noise()?,
                 }))
             }
-            SAMPLE_2D => {
+            FastNoiseKernel::Sample2d => {
                 let mut cursor = Cursor::new(&kernel.payload);
                 Ok(Box::new(Sample2dKernel {
                     source: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
                         z: None,
                     },
-                    output: cursor.read_u16()?,
+                    output: cursor.read_slot()?,
                     noise: cursor.read_noise()?,
                 }))
             }
-            SAMPLE_3D => {
+            FastNoiseKernel::Sample3d => {
                 let mut cursor = Cursor::new(&kernel.payload);
                 Ok(Box::new(Sample3dKernel {
                     source: PositionSlots {
-                        x: cursor.read_u16()?,
-                        y: cursor.read_u16()?,
-                        z: Some(cursor.read_u16()?),
+                        x: cursor.read_slot()?,
+                        y: cursor.read_slot()?,
+                        z: Some(cursor.read_slot()?),
                     },
-                    output: cursor.read_u16()?,
+                    output: cursor.read_slot()?,
                     noise: cursor.read_noise()?,
                 }))
             }
-            COMBINE => {
+            FastNoiseKernel::Combine => {
                 let mut cursor = Cursor::new(&kernel.payload);
                 let op = decode_combine_op(cursor.read_u32()?)?;
                 let input_count = usize::try_from(cursor.read_u32()?).map_err(|_| {
@@ -540,9 +582,9 @@ impl CpuKernelFactory for FastNoiseKernelFactory {
                 })?;
                 let mut inputs = Vec::with_capacity(input_count);
                 for _ in 0..input_count {
-                    inputs.push(cursor.read_u16()?);
+                    inputs.push(cursor.read_slot()?);
                 }
-                let output = cursor.read_u16()?;
+                let output = cursor.read_slot()?;
                 let param_count = usize::try_from(cursor.read_u32()?).map_err(|_| {
                     BraidError::InvalidSpec("combine param count overflow".to_owned())
                 })?;
@@ -557,7 +599,6 @@ impl CpuKernelFactory for FastNoiseKernelFactory {
                     params,
                 }))
             }
-            _ => Err(BraidError::BackendRejectedKernel(kernel.kind_id)),
         }
     }
 }
@@ -575,14 +616,15 @@ impl CpuKernel for InitGrid2dKernel {
             let [xs, ys]: [&mut [f32]; 2] = buffers
                 .try_into()
                 .map_err(|_| BraidError::from("init grid2d buffer view mismatch"))?;
-            for query_index in 0..query_count {
+            for (query_index, offset_value) in offsets.iter().take(query_count).copied().enumerate()
+            {
                 let meta_base = query_index * 3;
                 let float_base = query_index * 6;
                 let width = usize::try_from(meta[meta_base])
                     .map_err(|_| BraidError::InvalidSpec("grid2d width overflow".to_owned()))?;
                 let height = usize::try_from(meta[meta_base + 1])
                     .map_err(|_| BraidError::InvalidSpec("grid2d height overflow".to_owned()))?;
-                let offset = usize::try_from(offsets[query_index])
+                let offset = usize::try_from(offset_value)
                     .map_err(|_| BraidError::InvalidSpec("grid2d offset overflow".to_owned()))?;
                 let origin_x = floats[float_base];
                 let origin_y = floats[float_base + 1];
@@ -618,7 +660,8 @@ impl CpuKernel for InitGrid3dKernel {
             let [xs, ys, zs]: [&mut [f32]; 3] = buffers
                 .try_into()
                 .map_err(|_| BraidError::from("init grid3d buffer view mismatch"))?;
-            for query_index in 0..query_count {
+            for (query_index, offset_value) in offsets.iter().take(query_count).copied().enumerate()
+            {
                 let meta_base = query_index * 3;
                 let float_base = query_index * 6;
                 let width = usize::try_from(meta[meta_base])
@@ -627,7 +670,7 @@ impl CpuKernel for InitGrid3dKernel {
                     .map_err(|_| BraidError::InvalidSpec("grid3d height overflow".to_owned()))?;
                 let depth = usize::try_from(meta[meta_base + 2])
                     .map_err(|_| BraidError::InvalidSpec("grid3d depth overflow".to_owned()))?;
-                let offset = usize::try_from(offsets[query_index])
+                let offset = usize::try_from(offset_value)
                     .map_err(|_| BraidError::InvalidSpec("grid3d offset overflow".to_owned()))?;
                 let origin_x = floats[float_base];
                 let origin_y = floats[float_base + 1];
@@ -954,38 +997,14 @@ fn compile_graph(
     let mut position_slots = HashMap::new();
     let mut scalar_slots = HashMap::new();
     let mut buffers = vec![
-        BufferSpec {
-            slot: SLOT_QUERY_META,
-            element_kind: ElementKind::U32,
-            layout: BufferLayout::Dynamic,
-        },
-        BufferSpec {
-            slot: SLOT_QUERY_F32,
-            element_kind: ElementKind::F32,
-            layout: BufferLayout::Dynamic,
-        },
-        BufferSpec {
-            slot: SLOT_QUERY_OFFSETS,
-            element_kind: ElementKind::U32,
-            layout: BufferLayout::Dynamic,
-        },
-        BufferSpec {
-            slot: SLOT_BASE_X,
-            element_kind: ElementKind::F32,
-            layout: BufferLayout::Dynamic,
-        },
-        BufferSpec {
-            slot: SLOT_BASE_Y,
-            element_kind: ElementKind::F32,
-            layout: BufferLayout::Dynamic,
-        },
+        BufferSpec::dynamic(SLOT_QUERY_META, ElementKind::U32),
+        BufferSpec::dynamic(SLOT_QUERY_F32, ElementKind::F32),
+        BufferSpec::dynamic(SLOT_QUERY_OFFSETS, ElementKind::U32),
+        BufferSpec::dynamic(SLOT_BASE_X, ElementKind::F32),
+        BufferSpec::dynamic(SLOT_BASE_Y, ElementKind::F32),
     ];
     if state.dimension == GraphDimension::D3 {
-        buffers.push(BufferSpec {
-            slot: SLOT_BASE_Z,
-            element_kind: ElementKind::F32,
-            layout: BufferLayout::Dynamic,
-        });
+        buffers.push(BufferSpec::dynamic(SLOT_BASE_Z, ElementKind::F32));
     }
 
     for id in &sorted {
@@ -996,23 +1015,13 @@ fn compile_graph(
         };
         match node.output_kind(state.dimension) {
             OutputKind::Position(GraphDimension::D2) => {
-                let slots = PositionSlots {
-                    x: next_slot,
-                    y: next_slot + 1,
-                    z: None,
-                };
-                next_slot += 2;
+                let slots = allocate_position_slots(&mut next_slot, GraphDimension::D2);
                 position_slots.insert(id.clone(), slots);
                 buffers.push(dynamic_f32_buffer(slots.x));
                 buffers.push(dynamic_f32_buffer(slots.y));
             }
             OutputKind::Position(GraphDimension::D3) => {
-                let slots = PositionSlots {
-                    x: next_slot,
-                    y: next_slot + 1,
-                    z: Some(next_slot + 2),
-                };
-                next_slot += 3;
+                let slots = allocate_position_slots(&mut next_slot, GraphDimension::D3);
                 position_slots.insert(id.clone(), slots);
                 buffers.push(dynamic_f32_buffer(slots.x));
                 buffers.push(dynamic_f32_buffer(slots.y));
@@ -1020,8 +1029,7 @@ fn compile_graph(
                 buffers.push(dynamic_f32_buffer(slot_z));
             }
             OutputKind::Scalar(_) => {
-                let slot = next_slot;
-                next_slot += 1;
+                let slot = allocate_slot(&mut next_slot);
                 scalar_slots.insert(id.clone(), slot);
                 buffers.push(dynamic_f32_buffer(slot));
             }
@@ -1029,30 +1037,17 @@ fn compile_graph(
     }
 
     let mut stages = Vec::with_capacity(sorted.len() + 1);
-    stages.push(StageSpec {
-        kernels: vec![KernelSpec {
-            kind_id: match state.dimension {
-                GraphDimension::D2 => INIT_GRID_2D,
-                GraphDimension::D3 => INIT_GRID_3D,
-            },
-            payload: Arc::from([]),
-            bindings: vec![
-                BufferBinding {
-                    slot: SLOT_QUERY_META,
-                    access: BufferAccess::Read,
-                },
-                BufferBinding {
-                    slot: SLOT_QUERY_F32,
-                    access: BufferAccess::Read,
-                },
-                BufferBinding {
-                    slot: SLOT_QUERY_OFFSETS,
-                    access: BufferAccess::Read,
-                },
-            ],
-            dispatch: DispatchHint::WholeBatch,
-        }],
-    });
+    stages.push(StageSpec::single(
+        KernelSpec::empty(match state.dimension {
+            GraphDimension::D2 => FastNoiseKernel::InitGrid2d.into(),
+            GraphDimension::D3 => FastNoiseKernel::InitGrid3d.into(),
+        })
+        .with_bindings([
+            BufferBinding::read(SLOT_QUERY_META),
+            BufferBinding::read(SLOT_QUERY_F32),
+            BufferBinding::read(SLOT_QUERY_OFFSETS),
+        ]),
+    ));
 
     for id in &sorted {
         let Some(node) = by_id.get(id) else {
@@ -1111,9 +1106,7 @@ fn compile_graph(
                 encode_combine_kernel(node.op, inputs.as_slice(), output, &node.params, scratch)?
             }
         };
-        stages.push(StageSpec {
-            kernels: vec![kernel],
-        });
+        stages.push(StageSpec::single(kernel));
     }
 
     let final_slot = scalar_slots
@@ -1125,14 +1118,17 @@ fn compile_graph(
             reference: state.final_field.clone(),
         })?;
 
-    Ok(CompiledPlan {
-        pipeline: PipelineShape { buffers, stages },
-        static_buffers: Vec::new(),
-        planner_meta: FastNoisePlannerMeta {
-            dimension: state.dimension,
-            final_slot,
-        },
-    })
+    let mut plan = CompiledPlan::builder(FastNoisePlannerMeta {
+        dimension: state.dimension,
+        final_slot,
+    });
+    for buffer in buffers {
+        plan.buffer(buffer);
+    }
+    for stage in stages {
+        plan.stage(stage);
+    }
+    Ok(plan.build())
 }
 
 fn validate_node_id(id: &str) -> BraidResult<()> {
@@ -1323,17 +1319,12 @@ fn encode_warp2d_kernel(
     scratch: &mut PlannerScratch,
 ) -> KernelSpec {
     scratch.reset();
-    push_u16(&mut scratch.bytes, source.x);
-    push_u16(&mut scratch.bytes, source.y);
-    push_u16(&mut scratch.bytes, output.x);
-    push_u16(&mut scratch.bytes, output.y);
+    push_slot(&mut scratch.bytes, source.x);
+    push_slot(&mut scratch.bytes, source.y);
+    push_slot(&mut scratch.bytes, output.x);
+    push_slot(&mut scratch.bytes, output.y);
     push_noise(&mut scratch.bytes, noise);
-    KernelSpec {
-        kind_id: WARP_2D,
-        payload: Arc::from(scratch.bytes.clone()),
-        bindings: vec![],
-        dispatch: DispatchHint::WholeBatch,
-    }
+    KernelSpec::new(FastNoiseKernel::Warp2d.into(), scratch.bytes.clone())
 }
 
 fn encode_warp3d_kernel(
@@ -1343,73 +1334,64 @@ fn encode_warp3d_kernel(
     scratch: &mut PlannerScratch,
 ) -> BraidResult<KernelSpec> {
     scratch.reset();
-    push_u16(&mut scratch.bytes, source.x);
-    push_u16(&mut scratch.bytes, source.y);
-    push_u16(
+    push_slot(&mut scratch.bytes, source.x);
+    push_slot(&mut scratch.bytes, source.y);
+    push_slot(
         &mut scratch.bytes,
         expect_slot(source.z, "warp3d source z encode")?,
     );
-    push_u16(&mut scratch.bytes, output.x);
-    push_u16(&mut scratch.bytes, output.y);
-    push_u16(
+    push_slot(&mut scratch.bytes, output.x);
+    push_slot(&mut scratch.bytes, output.y);
+    push_slot(
         &mut scratch.bytes,
         expect_slot(output.z, "warp3d output z encode")?,
     );
     push_noise(&mut scratch.bytes, noise);
-    Ok(KernelSpec {
-        kind_id: WARP_3D,
-        payload: Arc::from(scratch.bytes.clone()),
-        bindings: vec![],
-        dispatch: DispatchHint::WholeBatch,
-    })
+    Ok(KernelSpec::new(
+        FastNoiseKernel::Warp3d.into(),
+        scratch.bytes.clone(),
+    ))
 }
 
 fn encode_sample2d_kernel(
     source: PositionSlots,
-    output: u16,
+    output: BufferSlot,
     noise: &FastNoiseLite,
     scratch: &mut PlannerScratch,
 ) -> KernelSpec {
     scratch.reset();
-    push_u16(&mut scratch.bytes, source.x);
-    push_u16(&mut scratch.bytes, source.y);
-    push_u16(&mut scratch.bytes, output);
+    push_slot(&mut scratch.bytes, source.x);
+    push_slot(&mut scratch.bytes, source.y);
+    push_slot(&mut scratch.bytes, output);
     push_noise(&mut scratch.bytes, noise);
-    KernelSpec {
-        kind_id: SAMPLE_2D,
-        payload: Arc::from(scratch.bytes.clone()),
-        bindings: vec![],
-        dispatch: DispatchHint::WholeBatch,
-    }
+    KernelSpec::new(FastNoiseKernel::Sample2d.into(), scratch.bytes.clone())
 }
 
 fn encode_sample3d_kernel(
     source: PositionSlots,
-    output: u16,
+    output: BufferSlot,
     noise: &FastNoiseLite,
     scratch: &mut PlannerScratch,
 ) -> BraidResult<KernelSpec> {
     scratch.reset();
-    push_u16(&mut scratch.bytes, source.x);
-    push_u16(&mut scratch.bytes, source.y);
-    push_u16(
+    push_slot(&mut scratch.bytes, source.x);
+    push_slot(&mut scratch.bytes, source.y);
+    push_slot(
         &mut scratch.bytes,
         expect_slot(source.z, "sample3d source z encode")?,
     );
-    push_u16(&mut scratch.bytes, output);
+    push_slot(&mut scratch.bytes, output);
     push_noise(&mut scratch.bytes, noise);
-    Ok(KernelSpec {
-        kind_id: SAMPLE_3D,
-        payload: Arc::from(scratch.bytes.clone()),
-        bindings: vec![],
-        dispatch: DispatchHint::WholeBatch,
-    })
+    Ok(KernelSpec::new(
+        FastNoiseKernel::Sample3d.into(),
+        scratch.bytes.clone(),
+    ))
 }
 
 fn encode_combine_kernel(
     op: CombineOp,
-    inputs: &[u16],
-    output: u16,
+    inputs: &[BufferSlot],
+    output: BufferSlot,
     params: &[f32],
     scratch: &mut PlannerScratch,
 ) -> BraidResult<KernelSpec> {
@@ -1420,9 +1402,9 @@ fn encode_combine_kernel(
         usize_to_u32(inputs.len(), "combine inputs")?,
     );
     for slot in inputs {
-        push_u16(&mut scratch.bytes, *slot);
+        push_slot(&mut scratch.bytes, *slot);
     }
-    push_u16(&mut scratch.bytes, output);
+    push_slot(&mut scratch.bytes, output);
     push_u32(
         &mut scratch.bytes,
         usize_to_u32(params.len(), "combine params")?,
@@ -1430,12 +1412,10 @@ fn encode_combine_kernel(
     for value in params {
         push_f32(&mut scratch.bytes, *value);
     }
-    Ok(KernelSpec {
-        kind_id: COMBINE,
-        payload: Arc::from(scratch.bytes.clone()),
-        bindings: vec![],
-        dispatch: DispatchHint::WholeBatch,
-    })
+    Ok(KernelSpec::new(
+        FastNoiseKernel::Combine.into(),
+        scratch.bytes.clone(),
+    ))
 }
 
 fn resolve_position_source(
@@ -1469,12 +1449,25 @@ fn resolve_position_source(
     }
 }
 
-fn dynamic_f32_buffer(slot: u16) -> BufferSpec {
-    BufferSpec {
-        slot,
-        element_kind: ElementKind::F32,
-        layout: BufferLayout::Dynamic,
+fn allocate_slot(next_slot: &mut u16) -> BufferSlot {
+    let slot = BufferSlot::new(*next_slot);
+    *next_slot += 1;
+    slot
+}
+
+fn allocate_position_slots(next_slot: &mut u16, dimension: GraphDimension) -> PositionSlots {
+    PositionSlots {
+        x: allocate_slot(next_slot),
+        y: allocate_slot(next_slot),
+        z: match dimension {
+            GraphDimension::D2 => None,
+            GraphDimension::D3 => Some(allocate_slot(next_slot)),
+        },
     }
+}
+
+fn dynamic_f32_buffer(slot: BufferSlot) -> BufferSpec {
+    BufferSpec::dynamic(slot, ElementKind::F32)
 }
 
 fn summarize_samples(values: &[f32]) -> ChunkSummary {
@@ -1547,17 +1540,17 @@ fn usize_to_u32(value: usize, label: &str) -> BraidResult<u32> {
         .map_err(|_| BraidError::InvalidSpec(format!("{} does not fit into u32", label)))
 }
 
-fn expect_slot(slot: Option<u16>, label: &str) -> BraidResult<u16> {
+fn expect_slot(slot: Option<BufferSlot>, label: &str) -> BraidResult<BufferSlot> {
     slot.ok_or_else(|| BraidError::InvalidSpec(format!("missing {}", label)))
 }
 
-fn expect_two_inputs(inputs: &[u16], label: &str) -> BraidResult<[u16; 2]> {
+fn expect_two_inputs(inputs: &[BufferSlot], label: &str) -> BraidResult<[BufferSlot; 2]> {
     inputs
         .try_into()
         .map_err(|_| BraidError::InvalidSpec(format!("{} expects two inputs", label)))
 }
 
-fn expect_input(inputs: &[u16], count: usize, label: &str) -> BraidResult<u16> {
+fn expect_input(inputs: &[BufferSlot], count: usize, label: &str) -> BraidResult<BufferSlot> {
     if inputs.len() != count {
         return Err(BraidError::InvalidSpec(format!(
             "{} expects {} inputs",
@@ -1592,6 +1585,10 @@ fn dimension_label(dimension: GraphDimension) -> &'static str {
 
 fn push_u16(bytes: &mut Vec<u8>, value: u16) {
     bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_slot(bytes: &mut Vec<u8>, value: BufferSlot) {
+    push_u16(bytes, value.raw());
 }
 
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -1827,6 +1824,10 @@ impl<'a> Cursor<'a> {
 
     fn read_u16(&mut self) -> BraidResult<u16> {
         Ok(u16::from_le_bytes(self.read_exact()?))
+    }
+
+    fn read_slot(&mut self) -> BraidResult<BufferSlot> {
+        Ok(BufferSlot::new(self.read_u16()?))
     }
 
     fn read_u32(&mut self) -> BraidResult<u32> {

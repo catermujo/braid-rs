@@ -1,7 +1,7 @@
 use crate::compute::ComputeBackend;
 use crate::error::{BraidError, BraidResult};
 use crate::job::{CancelFlag, JobPacket};
-use crate::pipeline::{CompiledPlan, KernelSpec, StageSpec};
+use crate::pipeline::{CompiledPlan, KernelKind, KernelSpec, StageSpec};
 use crate::scratch::ComputeScratch;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
@@ -21,7 +21,7 @@ pub trait CpuKernelFactory: Send + Sync {
 
 #[derive(Default)]
 pub struct CpuComputeBackend {
-    factories: HashMap<u32, Arc<dyn CpuKernelFactory>>,
+    factories: HashMap<KernelKind, Arc<dyn CpuKernelFactory>>,
 }
 
 impl CpuComputeBackend {
@@ -31,7 +31,7 @@ impl CpuComputeBackend {
 
     pub fn register_factory(
         &mut self,
-        kind_id: u32,
+        kind_id: KernelKind,
         factory: Arc<dyn CpuKernelFactory>,
     ) -> &mut Self {
         self.factories.insert(kind_id, factory);
@@ -108,7 +108,7 @@ mod tests {
     use super::CpuComputeBackend;
     use crate::compute::ComputeBackend;
     use crate::error::BraidError;
-    use crate::pipeline::{CompiledPlan, KernelSpec, PipelineShape, StageSpec};
+    use crate::pipeline::{CompiledPlan, KernelKind, KernelSpec, PipelineShape, StageSpec};
     use crate::scratch::ComputeScratch;
     use std::sync::Arc;
 
@@ -120,7 +120,7 @@ mod tests {
                 buffers: Vec::new(),
                 stages: vec![StageSpec {
                     kernels: vec![KernelSpec {
-                        kind_id: 999,
+                        kind_id: KernelKind::new(999),
                         payload: Arc::from([]),
                         bindings: Vec::new(),
                         dispatch: crate::pipeline::DispatchHint::Serial,
@@ -134,6 +134,9 @@ mod tests {
         let err = backend
             .prepare(&plan, None, &mut ComputeScratch::default())
             .unwrap_err();
-        assert!(matches!(err, BraidError::BackendRejectedKernel(999)));
+        assert!(matches!(
+            err,
+            BraidError::BackendRejectedKernel(kind) if kind == KernelKind::new(999)
+        ));
     }
 }

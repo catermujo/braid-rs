@@ -1018,14 +1018,12 @@ impl FastNoiseLite {
         let mut x = x;
         let mut y = y;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = self.gen_noise_single_2d(seed, x, y);
 
-            seed += 1;
             sum += noise * amp;
             amp *= Self::lerp(1., (noise + 1.).min(2.) * 0.5, self.weighted_strength);
 
@@ -1042,14 +1040,12 @@ impl FastNoiseLite {
         let mut y = y;
         let mut z = z;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = self.gen_noise_single_3d(seed, x, y, z);
 
-            seed += 1;
             sum += noise * amp;
             amp *= Self::lerp(1., (noise + 1.) * 0.5, self.weighted_strength);
 
@@ -1068,13 +1064,11 @@ impl FastNoiseLite {
         let mut x = x;
         let mut y = y;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = FloatOps::abs(self.gen_noise_single_2d(seed, x, y));
-            seed += 1;
 
             sum += (noise * -2. + 1.) * amp;
             amp *= Self::lerp(1., 1. - noise, self.weighted_strength);
@@ -1092,13 +1086,11 @@ impl FastNoiseLite {
         let mut y = y;
         let mut z = z;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = FloatOps::abs(self.gen_noise_single_3d(seed, x, y, z));
-            seed += 1;
 
             sum += (noise * -2. + 1.) * amp;
             amp *= Self::lerp(1., 1. - noise, self.weighted_strength);
@@ -1118,15 +1110,13 @@ impl FastNoiseLite {
         let mut x = x;
         let mut y = y;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding; // DEBUG: This is 0.400000006, should be 0.4
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = Self::ping_pong(
                 (self.gen_noise_single_2d(seed, x, y) + 1.) * self.ping_pong_strength,
             );
-            seed += 1;
 
             sum += (noise - 0.5) * 2. * amp;
             amp *= Self::lerp(1., noise, self.weighted_strength);
@@ -1144,15 +1134,13 @@ impl FastNoiseLite {
         let mut y = y;
         let mut z = z;
 
-        let mut seed = self.seed;
         let mut sum = 0.;
         let mut amp = self.fractal_bounding;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let noise = Self::ping_pong(
                 (self.gen_noise_single_3d(seed, x, y, z) + 1.) * self.ping_pong_strength,
             );
-            seed += 1;
 
             sum += (noise - 0.5) * 2. * amp;
             amp *= Self::lerp(1., noise, self.weighted_strength);
@@ -2564,16 +2552,14 @@ impl FastNoiseLite {
         let mut x = x;
         let mut y = y;
 
-        let mut seed = self.seed;
         let mut amp = self.domain_warp_amp * self.fractal_bounding;
         let mut freq = self.frequency;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let (xs, ys) = self.transform_domain_warp_coordinate_2d(x, y);
 
             (x, y) = self.do_single_domain_warp_2d(seed, amp, freq, xs, ys, x, y);
 
-            seed += 1;
             amp *= self.gain;
             freq *= self.lacunarity;
         }
@@ -2591,16 +2577,14 @@ impl FastNoiseLite {
         let mut y = y;
         let mut z = z;
 
-        let mut seed = self.seed;
         let mut amp = self.domain_warp_amp * self.fractal_bounding;
         let mut freq = self.frequency;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             let (xs, ys, zs) = self.transform_domain_warp_coordinate_3d(x, y, z);
 
             (x, y, z) = self.do_single_domain_warp_3d(seed, amp, freq, xs, ys, zs, x, y, z);
 
-            seed += 1;
             amp *= self.gain;
             freq *= self.lacunarity;
         }
@@ -2616,14 +2600,12 @@ impl FastNoiseLite {
 
         let (xs, ys) = self.transform_domain_warp_coordinate_2d(x, y);
 
-        let mut seed = self.seed;
         let mut amp = self.domain_warp_amp * self.fractal_bounding;
         let mut freq = self.frequency;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             (x, y) = self.do_single_domain_warp_2d(seed, amp, freq, xs, ys, x, y);
 
-            seed += 1;
             amp *= self.gain;
             freq *= self.lacunarity;
         }
@@ -2643,14 +2625,12 @@ impl FastNoiseLite {
 
         let (xs, ys, zs) = self.transform_domain_warp_coordinate_3d(x, y, z);
 
-        let mut seed = self.seed;
         let mut amp = self.domain_warp_amp * self.fractal_bounding;
         let mut freq = self.frequency;
 
-        for _ in 0..self.octaves {
+        for (seed, _) in (self.seed..).zip(0..self.octaves) {
             (x, y, z) = self.do_single_domain_warp_3d(seed, amp, freq, xs, ys, zs, x, y, z);
 
-            seed += 1;
             amp *= self.gain;
             freq *= self.lacunarity;
         }

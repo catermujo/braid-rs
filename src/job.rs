@@ -1,5 +1,5 @@
 use crate::error::{BraidError, BraidResult};
-use crate::pipeline::{BufferData, ElementKind};
+use crate::pipeline::{BufferData, BufferSlot, ElementKind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,7 +29,7 @@ pub enum JobStatus {
 
 #[derive(Debug)]
 pub struct PacketBuffer {
-    pub slot: u16,
+    pub slot: BufferSlot,
     pub data: BufferData,
 }
 
@@ -55,7 +55,7 @@ impl JobPacket {
         self.query_count = query_count;
     }
 
-    fn ensure_slot(&mut self, slot: u16, expected: ElementKind) -> usize {
+    fn ensure_slot(&mut self, slot: BufferSlot, expected: ElementKind) -> usize {
         for (idx, buffer) in self.buffers.iter_mut().enumerate() {
             if buffer.slot != slot {
                 continue;
@@ -81,7 +81,7 @@ impl JobPacket {
         self.buffers.len() - 1
     }
 
-    pub fn ensure_u32(&mut self, slot: u16, len: usize) -> &mut Vec<u32> {
+    pub fn ensure_u32(&mut self, slot: BufferSlot, len: usize) -> &mut Vec<u32> {
         let idx = self.ensure_slot(slot, ElementKind::U32);
         match &mut self.buffers[idx].data {
             BufferData::U32(vals) => {
@@ -92,7 +92,7 @@ impl JobPacket {
         }
     }
 
-    pub fn ensure_u64(&mut self, slot: u16, len: usize) -> &mut Vec<u64> {
+    pub fn ensure_u64(&mut self, slot: BufferSlot, len: usize) -> &mut Vec<u64> {
         let idx = self.ensure_slot(slot, ElementKind::U64);
         match &mut self.buffers[idx].data {
             BufferData::U64(vals) => {
@@ -103,7 +103,7 @@ impl JobPacket {
         }
     }
 
-    pub fn ensure_f32(&mut self, slot: u16, len: usize) -> &mut Vec<f32> {
+    pub fn ensure_f32(&mut self, slot: BufferSlot, len: usize) -> &mut Vec<f32> {
         let idx = self.ensure_slot(slot, ElementKind::F32);
         match &mut self.buffers[idx].data {
             BufferData::F32(vals) => {
@@ -114,7 +114,7 @@ impl JobPacket {
         }
     }
 
-    pub(crate) fn load_static_buffer(&mut self, slot: u16, data: &BufferData) {
+    pub(crate) fn load_static_buffer(&mut self, slot: BufferSlot, data: &BufferData) {
         match data {
             BufferData::U32(values) => {
                 self.ensure_u32(slot, values.len()).copy_from_slice(values);
@@ -130,13 +130,13 @@ impl JobPacket {
 
     pub(crate) fn buffer_descriptors(
         &self,
-    ) -> impl Iterator<Item = (u16, ElementKind, usize)> + '_ {
+    ) -> impl Iterator<Item = (BufferSlot, ElementKind, usize)> + '_ {
         self.buffers
             .iter()
             .map(|buffer| (buffer.slot, buffer.data.kind(), buffer.data.len()))
     }
 
-    pub fn u32(&self, slot: u16) -> BraidResult<&[u32]> {
+    pub fn u32(&self, slot: BufferSlot) -> BraidResult<&[u32]> {
         self.view(slot, ElementKind::U32)
             .and_then(|buffer| match buffer {
                 BufferData::U32(vals) => Ok(vals.as_slice()),
@@ -144,7 +144,7 @@ impl JobPacket {
             })
     }
 
-    pub fn u32_mut(&mut self, slot: u16) -> BraidResult<&mut [u32]> {
+    pub fn u32_mut(&mut self, slot: BufferSlot) -> BraidResult<&mut [u32]> {
         self.view_mut(slot, ElementKind::U32)
             .and_then(|buffer| match buffer {
                 BufferData::U32(vals) => Ok(vals.as_mut_slice()),
@@ -152,7 +152,7 @@ impl JobPacket {
             })
     }
 
-    pub fn u64(&self, slot: u16) -> BraidResult<&[u64]> {
+    pub fn u64(&self, slot: BufferSlot) -> BraidResult<&[u64]> {
         self.view(slot, ElementKind::U64)
             .and_then(|buffer| match buffer {
                 BufferData::U64(vals) => Ok(vals.as_slice()),
@@ -160,7 +160,7 @@ impl JobPacket {
             })
     }
 
-    pub fn f32(&self, slot: u16) -> BraidResult<&[f32]> {
+    pub fn f32(&self, slot: BufferSlot) -> BraidResult<&[f32]> {
         self.view(slot, ElementKind::F32)
             .and_then(|buffer| match buffer {
                 BufferData::F32(vals) => Ok(vals.as_slice()),
@@ -168,7 +168,7 @@ impl JobPacket {
             })
     }
 
-    pub fn f32_mut(&mut self, slot: u16) -> BraidResult<&mut [f32]> {
+    pub fn f32_mut(&mut self, slot: BufferSlot) -> BraidResult<&mut [f32]> {
         self.view_mut(slot, ElementKind::F32)
             .and_then(|buffer| match buffer {
                 BufferData::F32(vals) => Ok(vals.as_mut_slice()),
@@ -178,7 +178,7 @@ impl JobPacket {
 
     pub fn with_f32_buffers<R>(
         &mut self,
-        slots: &[u16],
+        slots: &[BufferSlot],
         f: impl FnOnce(Vec<&mut [f32]>) -> BraidResult<R>,
     ) -> BraidResult<R> {
         let mut indices = Vec::with_capacity(slots.len());
@@ -218,7 +218,7 @@ impl JobPacket {
         f(views)
     }
 
-    fn view(&self, slot: u16, expected: ElementKind) -> BraidResult<&BufferData> {
+    fn view(&self, slot: BufferSlot, expected: ElementKind) -> BraidResult<&BufferData> {
         let buffer = self
             .buffers
             .iter()
@@ -230,7 +230,11 @@ impl JobPacket {
         Ok(&buffer.data)
     }
 
-    fn view_mut(&mut self, slot: u16, expected: ElementKind) -> BraidResult<&mut BufferData> {
+    fn view_mut(
+        &mut self,
+        slot: BufferSlot,
+        expected: ElementKind,
+    ) -> BraidResult<&mut BufferData> {
         let buffer = self
             .buffers
             .iter_mut()
