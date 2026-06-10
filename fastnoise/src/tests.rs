@@ -18,6 +18,10 @@ fn sample_noise(seed: i32, noise_type: NoiseType, frequency: f32) -> FastNoiseLi
     noise
 }
 
+fn sample_noise_node(seed: i32, noise_type: NoiseType, frequency: f32) -> Arc<FastNoiseLite> {
+    Arc::new(sample_noise(seed, noise_type, frequency))
+}
+
 fn make_stack(
     spec: FastNoiseGraphSpec,
 ) -> braid::BraidResult<Stack<FastNoisePlanner, FastNoiseCpuBackend>> {
@@ -47,12 +51,12 @@ fn update_remove_and_set_final_field_recompile() {
             NodeSpec::Sample2D(Sample2DNode {
                 id: "left".to_owned(),
                 source: PositionSource::Base,
-                noise: sample_noise(11, NoiseType::Perlin, 0.01),
+                noise: sample_noise_node(11, NoiseType::Perlin, 0.01),
             }),
             NodeSpec::Sample2D(Sample2DNode {
                 id: "right".to_owned(),
                 source: PositionSource::Base,
-                noise: sample_noise(19, NoiseType::Value, 0.02),
+                noise: sample_noise_node(19, NoiseType::Value, 0.02),
             }),
         ],
     };
@@ -72,7 +76,7 @@ fn update_remove_and_set_final_field_recompile() {
             FastNoiseChange::UpsertNode(NodeSpec::Sample2D(Sample2DNode {
                 id: "right".to_owned(),
                 source: PositionSource::Base,
-                noise: updated,
+                noise: Arc::new(updated),
             })),
             FastNoiseChange::SetFinalField {
                 id: "right".to_owned(),
@@ -101,7 +105,7 @@ fn packet_sizing_and_offsets_follow_query_shapes() {
         nodes: vec![NodeSpec::Sample2D(Sample2DNode {
             id: "sample".to_owned(),
             source: PositionSource::Base,
-            noise: sample_noise(31, NoiseType::Perlin, 0.02),
+            noise: sample_noise_node(31, NoiseType::Perlin, 0.02),
         })],
     };
     let state = planner.init_state(&spec).expect("state");
@@ -151,6 +155,7 @@ fn sample3d_payload_roundtrip_preserves_fields() {
     let mut noise = sample_noise(37, NoiseType::OpenSimplex2S, 0.125);
     noise.set_fractal_lacunarity(Some(2.5));
     noise.set_fractal_gain(Some(0.45));
+    let noise = Arc::new(noise);
 
     let payload = SamplePayload::<3> {
         source: PositionSlots {
@@ -178,13 +183,13 @@ fn sample3d_payload_roundtrip_preserves_fields() {
 
 #[test]
 fn sample2d_and_warp2d_match_direct_fastnoise() {
-    let sample = sample_noise(41, NoiseType::Perlin, 0.015);
+    let sample = Arc::new(sample_noise(41, NoiseType::Perlin, 0.015));
     let warp = {
         let mut noise = FastNoiseLite::with_seed(43);
         noise.set_frequency(Some(0.02));
         noise.set_domain_warp_amp(Some(4.0));
         noise.set_fractal_type(Some(FractalType::DomainWarpProgressive));
-        noise
+        Arc::new(noise)
     };
     let spec = FastNoiseGraphSpec {
         dimension: GraphDimension::D2,
@@ -233,8 +238,8 @@ fn sample2d_and_warp2d_match_direct_fastnoise() {
 
 #[test]
 fn combine_and_ygradient_match_expected_math() {
-    let sample_a = sample_noise(53, NoiseType::Value, 0.025);
-    let sample_b = sample_noise(59, NoiseType::Perlin, 0.031);
+    let sample_a = Arc::new(sample_noise(53, NoiseType::Value, 0.025));
+    let sample_b = Arc::new(sample_noise(59, NoiseType::Perlin, 0.031));
     let spec = FastNoiseGraphSpec {
         dimension: GraphDimension::D3,
         final_field: "final".to_owned(),

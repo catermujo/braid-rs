@@ -199,8 +199,7 @@ fn bench_stack_apis(c: &mut Criterion) {
         b.iter_batched(
             || make_queries(0x1, batch_size),
             |queries| {
-                let job = stack.dispatch(queries).expect("dispatch");
-                let values = stack.collect(job).expect("collect");
+                let values = stack.dispatch_collect(queries).expect("dispatch_collect");
                 black_box(values[0]);
             },
             BatchSize::SmallInput,
