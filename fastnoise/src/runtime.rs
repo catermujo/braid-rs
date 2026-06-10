@@ -47,13 +47,13 @@ struct GridInitKernel {
 struct WarpKernel<const N: usize> {
     source: PositionSlots<N>,
     output: PositionSlots<N>,
-    noise: FastNoiseLite,
+    noise: Arc<FastNoiseLite>,
 }
 
 struct SampleKernel<const N: usize> {
     source: PositionSlots<N>,
     output: BufferSlot,
-    noise: FastNoiseLite,
+    noise: Arc<FastNoiseLite>,
 }
 
 struct CombineKernel {
@@ -67,14 +67,14 @@ struct CombineKernel {
 struct WarpPayload<const N: usize> {
     source: PositionSlots<N>,
     output: PositionSlots<N>,
-    noise: FastNoiseLite,
+    noise: Arc<FastNoiseLite>,
 }
 
 #[derive(Clone)]
 pub(crate) struct SamplePayload<const N: usize> {
     pub(crate) source: PositionSlots<N>,
     pub(crate) output: BufferSlot,
-    pub(crate) noise: FastNoiseLite,
+    pub(crate) noise: Arc<FastNoiseLite>,
 }
 
 #[derive(Clone)]
@@ -116,6 +116,7 @@ impl PlannerBackend for FastNoisePlanner {
     type Query = ChunkQuery;
     type Resolution = ChunkSummary;
     type PlannerMeta = FastNoisePlannerMeta;
+    const PREFER_ONE_QUERY_INLINE: bool = true;
 
     fn init_state(&self, spec: &Self::Spec) -> BraidResult<Self::State> {
         FastNoiseState::from_spec(spec)
@@ -170,25 +171,22 @@ impl PlannerBackend for FastNoisePlanner {
         let query_count = queries.len();
         packet.query_count = query_count;
 
-        let (meta_ptr, meta_len) = {
+        let meta_values = {
             let meta_values = packet.ensure::<u32>(SLOT_QUERY_META, query_count * 3);
-            let meta_len = meta_values.len();
-            (meta_values.as_mut_ptr(), meta_len)
+            unsafe { std::slice::from_raw_parts_mut(meta_values.as_mut_ptr(), meta_values.len()) }
         };
-        let meta_values = unsafe { std::slice::from_raw_parts_mut(meta_ptr, meta_len) };
-        let (float_ptr, float_len) = {
+        let float_values = {
             let float_values = packet.ensure::<f32>(SLOT_QUERY_F32, query_count * 6);
-            let float_len = float_values.len();
-            (float_values.as_mut_ptr(), float_len)
+            unsafe {
+                std::slice::from_raw_parts_mut(float_values.as_mut_ptr(), float_values.len())
+            };
         };
-        let float_values = unsafe { std::slice::from_raw_parts_mut(float_ptr, float_len) };
-        let (offset_ptr, offset_len) = {
+        let offset_values = {
             let offset_values = packet.ensure::<u32>(SLOT_QUERY_OFFSETS, query_count + 1);
-            let offset_len = offset_values.len();
-            (offset_values.as_mut_ptr(), offset_len)
+            unsafe {
+                std::slice::from_raw_parts_mut(offset_values.as_mut_ptr(), offset_values.len())
+            }
         };
-        let offset_values = unsafe { std::slice::from_raw_parts_mut(offset_ptr, offset_len) };
-
         let mut cursor = 0usize;
         offset_values[0] = 0;
         for (index, query) in queries.iter().enumerate() {
@@ -245,6 +243,86 @@ impl PlannerBackend for FastNoisePlanner {
         Ok(())
     }
 
+    fn encode_one(
+        &self,
+        plan: &CompiledPlan<Self::PlannerMeta>,
+        query: &Self::Query,
+        packet: &mut JobPacket,
+        scratch: &mut BatchScratch,
+    ) -> BraidResult<()> {
+        scratch.reset();
+        packet.query_count = 1;
+
+        let (meta_ptr, meta_len) = {
+            let meta_values = packet.ensure::<u32>(SLOT_QUERY_META, 3);
+            let meta_len = meta_values.len();
+            (meta_values.as_mut_ptr(), meta_len)
+        };
+        let meta_values = unsafe { std::slice::from_raw_parts_mut(meta_ptr, meta_len) };
+        let (float_ptr, float_len) = {
+            let float_values = packet.ensure::<f32>(SLOT_QUERY_F32, 6);
+            let float_len = float_values.len();
+            (float_values.as_mut_ptr(), float_len)
+        };
+        let float_values = unsafe { std::slice::from_raw_parts_mut(float_ptr, float_len) };
+        let (offset_ptr, offset_len) = {
+            let offset_values = packet.ensure::<u32>(SLOT_QUERY_OFFSETS, 2);
+            let offset_len = offset_values.len();
+            (offset_values.as_mut_ptr(), offset_len)
+        };
+        let offset_values = unsafe { std::slice::from_raw_parts_mut(offset_ptr, offset_len) };
+
+        match (plan.planner_meta.dimension, query) {
+            (
+                GraphDimension::D2,
+                ChunkQuery::Grid2D {
+                    width,
+                    height,
+                    origin,
+                    step,
+                },
+            ) => {
+                meta_values[0] = *width as u32;
+                meta_values[1] = *height as u32;
+                meta_values[2] = 1;
+                float_values[0] = origin[0];
+                float_values[1] = origin[1];
+                float_values[2] = 0.0;
+                float_values[3] = step[0];
+                float_values[4] = step[1];
+                float_values[5] = 1.0;
+                offset_values[0] = 0;
+                offset_values[1] = sample_count_2d(*width, *height) as u32;
+            }
+            (
+                GraphDimension::D3,
+                ChunkQuery::Grid3D {
+                    width,
+                    height,
+                    depth,
+                    origin,
+                    step,
+                },
+            ) => {
+                meta_values[0] = *width as u32;
+                meta_values[1] = *height as u32;
+                meta_values[2] = *depth as u32;
+                float_values[0] = origin[0];
+                float_values[1] = origin[1];
+                float_values[2] = origin[2];
+                float_values[3] = step[0];
+                float_values[4] = step[1];
+                float_values[5] = step[2];
+                offset_values[0] = 0;
+                offset_values[1] = sample_count_3d(*width, *height, *depth) as u32;
+            }
+            (GraphDimension::D2, ChunkQuery::Grid3D { .. }) => unreachable!("2d query shape"),
+            (GraphDimension::D3, ChunkQuery::Grid2D { .. }) => unreachable!("3d query shape"),
+        }
+
+        Ok(())
+    }
+
     fn decode_batch(
         &self,
         plan: &CompiledPlan<Self::PlannerMeta>,
@@ -253,12 +331,31 @@ impl PlannerBackend for FastNoisePlanner {
         let values = packet.slice::<f32>(plan.planner_meta.final_slot)?;
         let offsets = packet.slice::<u32>(SLOT_QUERY_OFFSETS)?;
         let mut summaries = Vec::with_capacity(offsets.len().saturating_sub(1));
-        for window in offsets.windows(2) {
-            let start = window[0] as usize;
-            let end = window[1] as usize;
+        let mut start = 0usize;
+        for end in offsets.iter().skip(1) {
+            let end = *end as usize;
             summaries.push(summarize_samples(&values[start..end]));
+            start = end;
         }
         Ok(summaries)
+    }
+
+    fn decode_one(
+        &self,
+        plan: &CompiledPlan<Self::PlannerMeta>,
+        packet: &JobPacket,
+    ) -> BraidResult<Self::Resolution> {
+        let values = packet.slice::<f32>(plan.planner_meta.final_slot)?;
+        let offsets = packet.slice::<u32>(SLOT_QUERY_OFFSETS)?;
+        if offsets.len() < 2 {
+            return Err(BraidError::from("missing fastnoise offsets"));
+        }
+        let end = offsets[1] as usize;
+        let start = offsets[0] as usize;
+        if values.len() < end || values.len() < start || start > end {
+            return Err(BraidError::from("invalid fastnoise offsets"));
+        }
+        Ok(summarize_samples(&values[start..end]))
     }
 }
 
@@ -1249,7 +1346,7 @@ impl<'a> PayloadReader<'a> {
         Ok(f32::from_le_bytes(self.read_exact()?))
     }
 
-    fn noise(&mut self) -> BraidResult<FastNoiseLite> {
+    fn noise(&mut self) -> BraidResult<Arc<FastNoiseLite>> {
         let seed = self.i32()?;
         let frequency = self.f32()?;
         let noise_type = decode_noise_type(self.u32()?)?;
@@ -1281,7 +1378,7 @@ impl<'a> PayloadReader<'a> {
         noise.set_cellular_jitter(Some(cellular_jitter));
         noise.set_domain_warp_type(Some(domain_warp_type));
         noise.set_domain_warp_amp(Some(domain_warp_amp));
-        Ok(noise)
+        Ok(Arc::new(noise))
     }
 }
 
@@ -1297,7 +1394,7 @@ impl KernelPayload for WarpPayload<2> {
         for slot in self.output.coords {
             writer.slot(slot);
         }
-        writer.noise(&self.noise);
+        writer.noise(self.noise.as_ref());
         Ok(())
     }
 
@@ -1323,7 +1420,7 @@ impl KernelPayload for WarpPayload<3> {
         for slot in self.output.coords {
             writer.slot(slot);
         }
-        writer.noise(&self.noise);
+        writer.noise(self.noise.as_ref());
         Ok(())
     }
 
@@ -1347,7 +1444,7 @@ impl KernelPayload for SamplePayload<2> {
             writer.slot(slot);
         }
         writer.slot(self.output);
-        writer.noise(&self.noise);
+        writer.noise(self.noise.as_ref());
         Ok(())
     }
 
@@ -1371,7 +1468,7 @@ impl KernelPayload for SamplePayload<3> {
             writer.slot(slot);
         }
         writer.slot(self.output);
-        writer.noise(&self.noise);
+        writer.noise(self.noise.as_ref());
         Ok(())
     }
 

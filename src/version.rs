@@ -8,6 +8,7 @@ where
     P: PlannerBackend,
     C: ComputeBackend,
 {
+    #[allow(dead_code, reason = "Not sure why this is here")]
     pub(crate) id: VersionId,
     pub(crate) compiled: CompiledPlan<P::PlannerMeta>,
     pub(crate) prepared: Option<C::Prepared>,

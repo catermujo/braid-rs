@@ -1,6 +1,8 @@
 use crate::fastnoise_lite::FastNoiseLite;
 use braid::{BraidResult, BufferSlot, CpuComputeBackend, KernelKind, SlotKey, SlotTable};
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 
 pub type FastNoiseCpuBackend = CpuComputeBackend;
 
@@ -81,32 +83,83 @@ pub enum CombineOp {
     YGradient,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Warp2DNode {
     pub id: String,
     pub source: PositionSource,
-    pub noise: FastNoiseLite,
+    pub noise: Arc<FastNoiseLite>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Warp3DNode {
     pub id: String,
     pub source: PositionSource,
-    pub noise: FastNoiseLite,
+    pub noise: Arc<FastNoiseLite>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Sample2DNode {
     pub id: String,
     pub source: PositionSource,
-    pub noise: FastNoiseLite,
+    pub noise: Arc<FastNoiseLite>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Sample3DNode {
     pub id: String,
     pub source: PositionSource,
-    pub noise: FastNoiseLite,
+    pub noise: Arc<FastNoiseLite>,
+}
+
+struct DebugNoiseArc<'a>(&'a Arc<FastNoiseLite>);
+
+impl fmt::Debug for DebugNoiseArc<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FastNoiseLite")
+            .field("ptr", &Arc::as_ptr(self.0))
+            .field("strong_count", &Arc::strong_count(self.0))
+            .finish()
+    }
+}
+
+impl fmt::Debug for Warp2DNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Warp2DNode")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("noise", &DebugNoiseArc(&self.noise))
+            .finish()
+    }
+}
+
+impl fmt::Debug for Warp3DNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Warp3DNode")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("noise", &DebugNoiseArc(&self.noise))
+            .finish()
+    }
+}
+
+impl fmt::Debug for Sample2DNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sample2DNode")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("noise", &DebugNoiseArc(&self.noise))
+            .finish()
+    }
+}
+
+impl fmt::Debug for Sample3DNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sample3DNode")
+            .field("id", &self.id)
+            .field("source", &self.source)
+            .field("noise", &DebugNoiseArc(&self.noise))
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

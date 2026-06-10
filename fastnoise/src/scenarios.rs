@@ -3,6 +3,7 @@ use crate::model::{
     ChunkSummary, CombineNode, CombineOp, FastNoiseChange, FastNoiseGraphSpec, GraphDimension,
     NodeSpec, PositionSource, Sample2DNode, Sample3DNode, Warp2DNode, Warp3DNode,
 };
+use std::sync::Arc;
 
 pub const BIOME_WARP_NODE: &str = "biome_warp";
 pub const BIOME_MOISTURE_NODE: &str = "biome_moisture";
@@ -35,12 +36,12 @@ pub fn biome_control_2d() -> FastNoiseGraphSpec {
             NodeSpec::Sample2D(Sample2DNode {
                 id: BIOME_MOISTURE_NODE.to_owned(),
                 source: PositionSource::Node(BIOME_WARP_NODE.to_owned()),
-                noise: sample_noise(711, NoiseType::Perlin, FractalType::FBm, 0.0022, 4),
+                noise: Arc::new(sample_noise(711, NoiseType::Perlin, FractalType::FBm, 0.0022, 4)),
             }),
             NodeSpec::Sample2D(Sample2DNode {
                 id: BIOME_TEMPERATURE_NODE.to_owned(),
                 source: PositionSource::Node(BIOME_WARP_NODE.to_owned()),
-                noise: sample_noise(719, NoiseType::OpenSimplex2, FractalType::FBm, 0.0018, 4),
+                noise: Arc::new(sample_noise(719, NoiseType::OpenSimplex2, FractalType::FBm, 0.0018, 4)),
             }),
             NodeSpec::Combine(CombineNode {
                 id: BIOME_FINAL_NODE.to_owned(),
@@ -68,23 +69,23 @@ pub fn terrain_height_2d() -> FastNoiseGraphSpec {
             NodeSpec::Sample2D(Sample2DNode {
                 id: TERRAIN_CONTINENT_NODE.to_owned(),
                 source: PositionSource::Node(TERRAIN_WARP_NODE.to_owned()),
-                noise: sample_noise(1011, NoiseType::OpenSimplex2, FractalType::FBm, 0.0012, 5),
+                noise: Arc::new(sample_noise(1011, NoiseType::OpenSimplex2, FractalType::FBm, 0.0012, 5)),
             }),
             NodeSpec::Sample2D(Sample2DNode {
                 id: TERRAIN_EROSION_NODE.to_owned(),
                 source: PositionSource::Node(TERRAIN_WARP_NODE.to_owned()),
-                noise: sample_noise(1019, NoiseType::Perlin, FractalType::FBm, 0.0032, 4),
+                noise: Arc::new(sample_noise(1019, NoiseType::Perlin, FractalType::FBm, 0.0032, 4)),
             }),
             NodeSpec::Sample2D(Sample2DNode {
                 id: TERRAIN_PEAKS_NODE.to_owned(),
                 source: PositionSource::Node(TERRAIN_WARP_NODE.to_owned()),
-                noise: sample_noise(
+                noise: Arc::new(sample_noise(
                     1027,
                     NoiseType::OpenSimplex2S,
                     FractalType::Ridged,
                     0.0056,
                     4,
-                ),
+                )),
             }),
             NodeSpec::Sample2D(Sample2DNode {
                 id: TERRAIN_DETAIL_NODE.to_owned(),
@@ -129,12 +130,12 @@ pub fn voxel_density_3d() -> FastNoiseGraphSpec {
             NodeSpec::Sample3D(Sample3DNode {
                 id: VOXEL_BASE_NODE.to_owned(),
                 source: PositionSource::Base,
-                noise: sample_noise(2011, NoiseType::OpenSimplex2, FractalType::FBm, 0.018, 5),
+                noise: Arc::new(sample_noise(2011, NoiseType::OpenSimplex2, FractalType::FBm, 0.018, 5)),
             }),
             NodeSpec::Sample3D(Sample3DNode {
                 id: VOXEL_CAVE_NODE.to_owned(),
                 source: PositionSource::Node(VOXEL_WARP_NODE.to_owned()),
-                noise: sample_noise(2019, NoiseType::Cellular, FractalType::Ridged, 0.03, 3),
+                noise: Arc::new(sample_noise(2019, NoiseType::Cellular, FractalType::Ridged, 0.03, 3)),
             }),
             NodeSpec::Combine(CombineNode {
                 id: VOXEL_SHAPE_NODE.to_owned(),
@@ -153,14 +154,19 @@ pub fn voxel_density_3d() -> FastNoiseGraphSpec {
 }
 
 pub fn terrain_patch_from_biome(summary: &ChunkSummary) -> Vec<FastNoiseChange> {
-    let mut noise = terrain_detail_noise(1033);
+    let mut noise = FastNoiseLite::with_seed(1033);
+    noise.set_noise_type(Some(NoiseType::ValueCubic));
+    noise.set_fractal_type(Some(FractalType::FBm));
+    noise.set_fractal_octaves(Some(3));
+    noise.set_fractal_lacunarity(Some(2.0));
+    noise.set_fractal_gain(Some(0.45));
     noise.set_frequency(Some(0.015 + summary.taps[0].abs() * 0.02));
     noise.set_fractal_gain(Some((0.35 + summary.taps[3].abs() * 0.35).min(0.95)));
     vec![FastNoiseChange::UpsertNode(NodeSpec::Sample2D(
         Sample2DNode {
             id: TERRAIN_DETAIL_NODE.to_owned(),
             source: PositionSource::Node(TERRAIN_WARP_NODE.to_owned()),
-            noise,
+            noise: Arc::new(noise),
         },
     ))]
 }
@@ -173,7 +179,7 @@ pub fn voxel_patch_from_terrain(summary: &ChunkSummary) -> Vec<FastNoiseChange> 
         Sample3DNode {
             id: VOXEL_BASE_NODE.to_owned(),
             source: PositionSource::Base,
-            noise,
+            noise: Arc::new(noise),
         },
     ))]
 }
@@ -196,13 +202,13 @@ fn sample_noise(
     noise
 }
 
-fn terrain_detail_noise(seed: i32) -> FastNoiseLite {
+fn terrain_detail_noise(seed: i32) -> Arc<FastNoiseLite> {
     let mut noise = sample_noise(seed, NoiseType::ValueCubic, FractalType::FBm, 0.022, 3);
     noise.set_fractal_gain(Some(0.45));
-    noise
+    Arc::new(noise)
 }
 
-fn warp_noise(seed: i32, frequency: f32, amplitude: f32) -> FastNoiseLite {
+fn warp_noise(seed: i32, frequency: f32, amplitude: f32) -> Arc<FastNoiseLite> {
     let mut noise = FastNoiseLite::with_seed(seed);
     noise.set_frequency(Some(frequency));
     noise.set_domain_warp_type(Some(DomainWarpType::OpenSimplex2));
@@ -210,5 +216,5 @@ fn warp_noise(seed: i32, frequency: f32, amplitude: f32) -> FastNoiseLite {
     noise.set_fractal_type(Some(FractalType::DomainWarpProgressive));
     noise.set_fractal_octaves(Some(3));
     noise.set_fractal_gain(Some(0.5));
-    noise
+    Arc::new(noise)
 }

@@ -69,6 +69,7 @@ where
     jobs: Mutex<HashMap<JobId, Arc<JobRecord<P::Resolution>>>>,
     next_job_id: AtomicU64,
     next_version_id: AtomicU64,
+    current_version_id: AtomicU64,
 }
 
 /// Reusable caller-owned scratch for low-latency inline execution.
@@ -166,6 +167,7 @@ where
                 jobs: Mutex::new(HashMap::new()),
                 next_job_id: AtomicU64::new(1),
                 next_version_id: AtomicU64::new(2),
+                current_version_id: AtomicU64::new(1),
             }),
         })
     }
@@ -444,12 +446,7 @@ where
 
     /// Return the current frozen version id.
     pub fn current_version_id(&self) -> BraidResult<VersionId> {
-        let version = self
-            .inner
-            .current_version
-            .read()
-            .map_err(|_| BraidError::poisoned("stack.current_version"))?;
-        Ok(version.id)
+        Ok(self.inner.current_version_id.load(Ordering::Acquire))
     }
 
     /// Poll one stack-local job for coarse status.
@@ -504,6 +501,75 @@ where
         if let Ok(mut jobs) = self.inner.jobs.lock() {
             jobs.remove(&job);
         }
+        result
+    }
+
+    /// Run one batch inline and return decoded planner results immediately.
+    ///
+    /// This avoids job allocation, queueing, and collect synchronization for benchmarks
+    /// and caller-owned workloads that do not need async behavior.
+    pub fn dispatch_collect(&self, queries: Vec<P::Query>) -> BraidResult<Vec<P::Resolution>> {
+        let version = {
+            let version = self
+                .inner
+                .current_version
+                .read()
+                .map_err(|_| BraidError::poisoned("stack.current_version"))?;
+            Arc::clone(&version)
+        };
+
+        let mut context = self
+            .inner
+            .inline_context_pool
+            .checkout("stack.inline_context")?;
+        context.cancel.reset();
+        let result = if P::PREFER_DIRECT_ONE_QUERY_INLINE
+            && let [query] = queries.as_slice()
+        {
+            #[cfg(debug_assertions)]
+            {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    self.inner
+                        .execute_one_direct_inline(&version, query, &mut context)
+                        .map(|value| vec![value])
+                }));
+                match result {
+                    Ok(result) => result,
+                    Err(_) => Err(BraidError::from("inline execution panicked")),
+                }
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                self.inner
+                    .execute_one_direct_inline(&version, query, &mut context)
+                    .map(|value| vec![value])
+            }
+        } else if P::PREFER_ONE_QUERY_INLINE && let [query] = queries.as_slice() {
+            #[cfg(debug_assertions)]
+            {
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    self.inner.execute_one_inline(&version, query, &mut context)
+                }));
+                match result {
+                    Ok(result) => result.map(|value| vec![value]),
+                    Err(_) => Err(BraidError::from("inline execution panicked")),
+                }
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                self.inner
+                    .execute_one_inline(&version, query, &mut context)
+                    .map(|value| vec![value])
+            }
+        } else {
+            self.inner.execute_inline(&version, queries.as_slice(), &mut context)
+        };
+        context.reset();
+        self.inner
+            .inline_context_pool
+            .give_back("stack.inline_context", context)?;
         result
     }
 
@@ -639,11 +705,11 @@ where
             .and_then(|_| self.planner.decode_batch(&version.compiled, &packet));
         let recycle_result = self.recycle_packet(packet);
         match decode_result {
-            Ok(values) => {
-                recycle_result?;
-                Ok(values)
+            Ok(values) => recycle_result.map(|_| values),
+            Err(error) => {
+                let _ = recycle_result;
+                Err(error)
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -761,6 +827,7 @@ where
             .write()
             .map_err(|_| BraidError::poisoned("stack.current_version"))?;
         *current = frozen;
+        self.current_version_id.store(version_id, Ordering::Release);
         Ok(version_id)
     }
 

@@ -303,25 +303,25 @@ struct DirectScratch {
 
 #[derive(Clone)]
 struct TerrainRecipe {
-    warp: FastNoiseLite,
-    continent: FastNoiseLite,
-    erosion: FastNoiseLite,
-    peaks: FastNoiseLite,
-    detail: FastNoiseLite,
+    warp: Arc<FastNoiseLite>,
+    continent: Arc<FastNoiseLite>,
+    erosion: Arc<FastNoiseLite>,
+    peaks: Arc<FastNoiseLite>,
+    detail: Arc<FastNoiseLite>,
 }
 
 #[derive(Clone)]
 struct BiomeRecipe {
-    warp: FastNoiseLite,
-    moisture: FastNoiseLite,
-    temperature: FastNoiseLite,
+    warp: Arc<FastNoiseLite>,
+    moisture: Arc<FastNoiseLite>,
+    temperature: Arc<FastNoiseLite>,
 }
 
 #[derive(Clone)]
 struct VoxelRecipe {
-    warp: FastNoiseLite,
-    base: FastNoiseLite,
-    cave: FastNoiseLite,
+    warp: Arc<FastNoiseLite>,
+    base: Arc<FastNoiseLite>,
+    cave: Arc<FastNoiseLite>,
 }
 
 fn bench_terrain_direct_serial(config: &BenchConfig) -> BraidResult<BenchReport> {
@@ -999,13 +999,24 @@ fn terrain_patch_from_seed(seed: u32) -> Vec<FastNoiseChange> {
         .expect("terrain detail node missing");
 
     let mut detail = detail;
-    detail.noise.set_seed(Some(seed as i32 + 1033));
-    detail
-        .noise
-        .set_frequency(Some(0.012 + (seed % 7) as f32 * 0.0025));
-    detail
-        .noise
-        .set_fractal_gain(Some((0.35 + (seed % 5) as f32 * 0.08).min(0.95)));
+    let source_noise = detail.noise.as_ref();
+    let mut noise = FastNoiseLite::with_seed(seed as i32 + 1033);
+    noise.set_frequency(Some(0.012 + (seed % 7) as f32 * 0.0025));
+    noise.set_noise_type(Some(source_noise.noise_type));
+    noise.set_rotation_type_3d(Some(source_noise.rotation_type_3d));
+    noise.set_fractal_type(Some(source_noise.fractal_type));
+    noise.set_fractal_octaves(Some(source_noise.octaves));
+    noise.set_fractal_lacunarity(Some(source_noise.lacunarity));
+    noise.set_fractal_gain(Some(source_noise.gain));
+    noise.set_fractal_weighted_strength(Some(source_noise.weighted_strength));
+    noise.set_fractal_ping_pong_strength(Some(source_noise.ping_pong_strength));
+    noise.set_cellular_distance_function(Some(source_noise.cellular_distance_function));
+    noise.set_cellular_return_type(Some(source_noise.cellular_return_type));
+    noise.set_cellular_jitter(Some(source_noise.cellular_jitter_modifier));
+    noise.set_domain_warp_type(Some(source_noise.domain_warp_type));
+    noise.set_domain_warp_amp(Some(source_noise.domain_warp_amp));
+    noise.set_fractal_gain(Some((0.35 + (seed % 5) as f32 * 0.08).min(0.95)));
+    detail.noise = Arc::new(noise);
     vec![FastNoiseChange::UpsertNode(NodeSpec::Sample2D(detail))]
 }
 
@@ -1042,7 +1053,7 @@ fn voxel_recipe() -> VoxelRecipe {
     }
 }
 
-fn find_warp2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
+fn find_warp2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> Arc<FastNoiseLite> {
     spec.nodes
         .iter()
         .find_map(|node| match node {
@@ -1052,7 +1063,7 @@ fn find_warp2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
         .unwrap_or_else(|| panic!("warp2d node missing: {id}"))
 }
 
-fn find_warp3d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
+fn find_warp3d_noise(spec: &FastNoiseGraphSpec, id: &str) -> Arc<FastNoiseLite> {
     spec.nodes
         .iter()
         .find_map(|node| match node {
@@ -1062,7 +1073,7 @@ fn find_warp3d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
         .unwrap_or_else(|| panic!("warp3d node missing: {id}"))
 }
 
-fn find_sample2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
+fn find_sample2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> Arc<FastNoiseLite> {
     spec.nodes
         .iter()
         .find_map(|node| match node {
@@ -1072,7 +1083,7 @@ fn find_sample2d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
         .unwrap_or_else(|| panic!("sample2d node missing: {id}"))
 }
 
-fn find_sample3d_noise(spec: &FastNoiseGraphSpec, id: &str) -> FastNoiseLite {
+fn find_sample3d_noise(spec: &FastNoiseGraphSpec, id: &str) -> Arc<FastNoiseLite> {
     spec.nodes
         .iter()
         .find_map(|node| match node {

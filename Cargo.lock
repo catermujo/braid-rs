@@ -51,7 +51,7 @@ name = "braid-fastnoise"
 version = "0.1.0"
 dependencies = [
  "braid",
- "num-traits",
+ "fastnoise-lite",
 ]
 
 [[package]]
@@ -205,6 +205,15 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+
+[[package]]
+name = "fastnoise-lite"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e5f3c3cc9081e5d0e18bcd50e80cd33cba47fc22f88a9da9c33ecd1c87ea5c0"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "find-msvc-tools"
