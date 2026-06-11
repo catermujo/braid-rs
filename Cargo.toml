@@ -16,10 +16,10 @@ path = "src/lib.rs"
 # path = "benches/core_stack_executor.rs"
 # harness = false
 
-# [[bench]]
-# name = "fastnoise_worldgen"
-# path = "benches/fastnoise_worldgen.rs"
-# harness = false
+[[bench]]
+name = "fastnoise_worldgen"
+path = "benches/fastnoise_worldgen.rs"
+harness = false
 
 [[bench]]
 name = "criterion_packet_api"
