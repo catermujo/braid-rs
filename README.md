@@ -1,6 +1,6 @@
-# `braid`
+# `braids`
 
-`braid` is a planner-agnostic, compute-agnostic execution core.
+`braids` is a planner-agnostic, compute-agnostic execution core.
 
 Main shape:
 - shared `BraidExecutor`
@@ -9,12 +9,12 @@ Main shape:
 - versioned recompile/swap
 - async stack-parallel job execution
 
-`braid` core does not require the starter CPU backend. That backend exists only to get users moving fast.
+`braids` core does not require the starter CPU backend. That backend exists only to get users moving fast.
 
 ## Workspace Pieces
 
-- `braid`: core executor / stack / traits
-- `braid-fastnoise`: real FastNoise worldgen adapter with vendored upstream source
+- `braids`: core executor / stack / traits
+- `braids-fastnoise`: real FastNoise worldgen adapter with vendored upstream source
 
 ## Docs
 
@@ -22,20 +22,20 @@ Main shape:
 - [docs/writing_planners_and_backends.md](./docs/writing_planners_and_backends.md): how to implement a planner or backend
 - `cargo doc --no-deps`: API docs for `PlannerBackend`, `ComputeBackend`, `Stack`, and `BraidExecutor`
 - [examples/terrain_stack.rs](./examples/terrain_stack.rs): smallest real stack example
-- [examples/lanes_showcase.rs](./examples/lanes_showcase.rs): direct serial vs braid parallel showcase
+- [examples/lanes_showcase.rs](./examples/lanes_showcase.rs): direct serial vs braids parallel showcase
 
 ## Quick Start
 
 Tiny stack example:
 
 ```sh
-cargo run -p braid --example terrain_stack
+cargo run -p braids --example terrain_stack
 ```
 
 Parallel lanes showcase:
 
 ```sh
-cargo run -p braid --example lanes_showcase --release
+cargo run -p braids --example lanes_showcase --release
 ```
 
 Fair serial overhead bench:
@@ -48,12 +48,12 @@ cargo bench --bench fastnoise_worldgen -- 120
 
 Two useful truths from the FastNoise workload:
 
-1. `braid` core overhead is tiny next to real chunk generation compute.
+1. `braids` core overhead is tiny next to real chunk generation compute.
 2. Multi-lane speedup is simple: register backend with more lanes, dispatch more jobs.
 
 ## Core Model
 
-`braid` keeps four roles separate:
+`braids` keeps four roles separate:
 
 - `PlannerBackend`: owns your authoring model, mutable planner state, compilation, and query/result codecs
 - `ComputeBackend`: owns execution of compiled stages on some device or runtime
@@ -100,7 +100,7 @@ For tiny serial work where queueing would dominate compute, use inline resolutio
 let summary = stack.resolve_one_inline(query)?;
 let summaries = stack.resolve_inline(&queries)?;
 
-let mut inline = braid::InlineContext::default();
+let mut inline = braids::InlineContext::default();
 let summary = stack.resolve_one_inline_with(query, &mut inline)?;
 ```
 
@@ -112,7 +112,7 @@ terrain lanes showcase: chunks=32 lanes=8 direct_serial_ms=106.901 braid_paralle
 
 So same terrain work, same planner, same backend family:
 - direct serial baseline: `106.901 ms`
-- `braid` with `8` lanes: `12.971 ms`
+- `braids` with `8` lanes: `12.971 ms`
 - speedup: about `8.24x`
 
 ## Fair Serial Overhead
@@ -121,7 +121,7 @@ This bench uses:
 - `1` worker
 - `1` backend lane
 - direct serial baseline
-- serial `braid` path
+- serial `braids` path
 
 So these numbers show overhead, not lane scaling.
 
@@ -156,7 +156,7 @@ Read:
 - almost all time is real compute
 - stack/executor roundtrip is tiny
 - encode/decode are small
-- if something is slow, it is mostly backend/kernel work, not `braid` core machinery
+- if something is slow, it is mostly backend/kernel work, not `braids` core machinery
 
 ## Examples
 
@@ -167,7 +167,7 @@ Read:
 
 - Numbers are machine-specific.
 - `CpuComputeBackend` is only a starter helper.
-- `braid` stays generic over `ComputeBackend`.
-- Vendored FastNoiseLite reference and license stay in `braid/fastnoise`:
+- `braids` stays generic over `ComputeBackend`.
+- Vendored FastNoiseLite reference and license stay in `braids/fastnoise`:
   - `README.fastnoise-lite.md`
   - `LICENSE.fastnoise-lite.md`
